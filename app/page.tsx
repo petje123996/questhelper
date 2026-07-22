@@ -67,7 +67,7 @@ const SKILLS = new Set([
 ]);
 
 type SkillReq = { level: number; skill: string; note: string };
-type Coords = { x: number; y: number };
+type Coords = { x: number; y: number; plane?: number; mapId?: number };
 type Meta = {
   difficulty: string | null;
   length: string | null;
@@ -104,7 +104,14 @@ type Lookup = {
   coords: Coords | null;
   error: string | null;
 };
-type WorldMap = { x: number; y: number; title: string; marker: boolean };
+type WorldMap = {
+  x: number;
+  y: number;
+  title: string;
+  marker: boolean;
+  plane?: number;
+  mapId?: number;
+};
 type QuestReward = { qp: number; xp: Record<string, number> };
 type Progress = Record<string, QuestReward>;
 
@@ -160,28 +167,54 @@ function wikiUrl(page: string): string {
   return WIKI + "/w/" + encodeURIComponent(page.replace(/ /g, "_"));
 }
 
+// Render text with \u0001…\u0002 bold markers as real bold text
+function renderRich(t: string): React.ReactNode {
+  if (!t.includes("\u0001")) return t;
+  const parts = t.split(/[\u0001\u0002]/);
+  return parts.map((p, i) =>
+    i % 2 === 1 ? (
+      <b key={i} style={{ fontWeight: 800 }}>
+        {p}
+      </b>
+    ) : (
+      <span key={i}>{p}</span>
+    )
+  );
+}
+
 // Extract game coordinates from wiki HTML (embedded maps)
 function extractCoords(html: string): Coords | null {
-  const valid = (x: number, y: number) =>
-    x >= 1000 && x <= 13000 && y >= 1000 && y <= 13000 ? { x, y } : null;
+  const withMeta = (x: number, y: number): Coords | null => {
+    if (x < 1000 || x > 13000 || y < 1000 || y > 13000) return null;
+    const c: Coords = { x, y };
+    const pm = html.match(/"plane"\s*:\s*(\d)/) || html.match(/data-plane="(\d)"/);
+    if (pm) c.plane = Math.min(3, Math.max(0, parseInt(pm[1], 10)));
+    const mm =
+      html.match(/"mapID"\s*:\s*(-?\d+)/i) || html.match(/data-mapid="(-?\d+)"/i);
+    if (mm) {
+      const id = parseInt(mm[1], 10);
+      if (id > 0) c.mapId = id; // -1/0 both mean the surface map
+    }
+    return c;
+  };
   let m = html.match(/"coordinates"\s*:\s*\[\s*(\d{3,5})(?:\.\d+)?\s*,\s*(\d{3,5})/);
   if (m) {
-    const r = valid(+m[1], +m[2]);
+    const r = withMeta(+m[1], +m[2]);
     if (r) return r;
   }
   m = html.match(/data-x="(\d{3,5})"[^>]*data-y="(\d{3,5})"/);
   if (m) {
-    const r = valid(+m[1], +m[2]);
+    const r = withMeta(+m[1], +m[2]);
     if (r) return r;
   }
   m = html.match(/data-lon="(\d{3,5}(?:\.\d+)?)"[^>]*data-lat="(\d{3,5}(?:\.\d+)?)"/);
   if (m) {
-    const r = valid(Math.round(+m[1]), Math.round(+m[2]));
+    const r = withMeta(Math.round(+m[1]), Math.round(+m[2]));
     if (r) return r;
   }
   m = html.match(/data-lat="(\d{3,5}(?:\.\d+)?)"[^>]*data-lon="(\d{3,5}(?:\.\d+)?)"/);
   if (m) {
-    const r = valid(Math.round(+m[2]), Math.round(+m[1]));
+    const r = withMeta(Math.round(+m[2]), Math.round(+m[1]));
     if (r) return r;
   }
   return null;
@@ -325,6 +358,13 @@ function makeStep(li: Element, section: string): Step | null {
     if (!label || label.length < 3 || !page) return;
     if (links.some((l) => l.page === page)) return;
     links.push({ label, page });
+  });
+
+  // Mark bold text (dialogue choices) with sentinel characters so it
+  // survives the plain-text extraction and can be rendered bold again
+  clone.querySelectorAll("b, strong").forEach((el) => {
+    const t = (el.textContent || "").trim();
+    if (t) el.textContent = "\u0001" + t + "\u0002";
   });
 
   const raw = cleanText(clone.textContent || "");
@@ -513,6 +553,17 @@ export default function QuestHelper() {
   const [statsError, setStatsError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
   const mapDivRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<any>(null);
+  const layerRef = useRef<any>(null);
+  const planeRef = useRef(0);
+  const routeModeRef = useRef(false);
+  const routeRef = useRef<{ pts: { x: number; y: number }[]; layers: any[] }>({
+    pts: [],
+    layers: [],
+  });
+  const [floor, setFloor] = useState(0);
+  const [routeMode, setRouteMode] = useState(false);
+  const [routeInfo, setRouteInfo] = useState<string | null>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
@@ -651,6 +702,12 @@ export default function QuestHelper() {
     let map: any = null;
     let cancelled = false;
     setMapError(null);
+    setRouteInfo(null);
+    setRouteMode(false);
+    routeModeRef.current = false;
+    routeRef.current = { pts: [], layers: [] };
+    planeRef.current = worldMap.plane ?? 0;
+    setFloor(worldMap.plane ?? 0);
     (async () => {
       try {
         let v: string | null = null;
@@ -677,12 +734,15 @@ export default function QuestHelper() {
           attributionControl: true,
         });
 
+        mapRef.current = map;
+
+        const mapId = worldMap.mapId && worldMap.mapId > 0 ? worldMap.mapId : 0;
         const OsrsTiles = L.TileLayer.extend({
           getTileUrl: function (c: any) {
-            return `${TILES}/0_${v}/${c.z}/0_${c.x}_${-(c.y + 1)}.png`;
+            return `${TILES}/${mapId}_${v}/${c.z}/${planeRef.current}_${c.x}_${-(c.y + 1)}.png`;
           },
         });
-        new OsrsTiles("", {
+        const layer = new OsrsTiles("", {
           minZoom: -3,
           maxZoom: 5,
           minNativeZoom: -3,
@@ -690,7 +750,9 @@ export default function QuestHelper() {
           tileSize: 256,
           attribution:
             'Map © Jagex · tiles <a href="https://weirdgloop.org/licensing" target="_blank" rel="noopener">RuneScape Wiki</a>',
-        }).addTo(map);
+        });
+        layer.addTo(map);
+        layerRef.current = layer;
 
         const pos = [worldMap.y + 0.5, worldMap.x + 0.5];
         map.setView(pos, worldMap.marker ? 2 : 0);
@@ -705,15 +767,80 @@ export default function QuestHelper() {
             .addTo(map)
             .bindTooltip(worldMap.title);
         }
+
+        // Route measuring: tap start, tap destination
+        map.on("click", (e: any) => {
+          if (!routeModeRef.current) return;
+          const pt = { x: e.latlng.lng, y: e.latlng.lat };
+          const r = routeRef.current;
+          if (r.pts.length >= 2) {
+            r.layers.forEach((ly: any) => map.removeLayer(ly));
+            r.pts = [];
+            r.layers = [];
+            setRouteInfo(null);
+          }
+          r.pts.push(pt);
+          const mk = L.circleMarker([pt.y, pt.x], {
+            radius: 7,
+            color: "#E7B84C",
+            weight: 3,
+            fillColor: r.pts.length === 1 ? "#7CB363" : "#C96A5B",
+            fillOpacity: 0.95,
+          }).addTo(map);
+          r.layers.push(mk);
+          if (r.pts.length === 2) {
+            const [a, b] = r.pts;
+            const line = L.polyline(
+              [
+                [a.y, a.x],
+                [b.y, b.x],
+              ],
+              { color: "#E7B84C", weight: 3, dashArray: "6 6" }
+            ).addTo(map);
+            r.layers.push(line);
+            // OSRS movement allows diagonals → Chebyshev distance
+            const tiles = Math.max(
+              Math.abs(Math.round(b.x) - Math.round(a.x)),
+              Math.abs(Math.round(b.y) - Math.round(a.y))
+            );
+            const runSec = Math.ceil(tiles / 2) * 0.6;
+            const walkSec = tiles * 0.6;
+            setRouteInfo(
+              `≈ ${tiles} tiles · run ~${Math.round(runSec)}s · walk ~${Math.round(walkSec)}s (straight line)`
+            );
+          }
+        });
       } catch {
         if (!cancelled) setMapError("The map couldn't be loaded.");
       }
     })();
     return () => {
       cancelled = true;
+      mapRef.current = null;
+      layerRef.current = null;
+      routeRef.current = { pts: [], layers: [] };
       if (map) map.remove();
     };
   }, [worldMap]);
+
+  const setMapFloor = (p: number) => {
+    planeRef.current = p;
+    setFloor(p);
+    if (layerRef.current) layerRef.current.redraw();
+  };
+
+  const toggleRouteMode = () => {
+    const next = !routeModeRef.current;
+    routeModeRef.current = next;
+    setRouteMode(next);
+    if (!next && mapRef.current) {
+      routeRef.current.layers.forEach((ly: any) =>
+        mapRef.current.removeLayer(ly)
+      );
+      routeRef.current = { pts: [], layers: [] };
+      setRouteInfo(null);
+    }
+  };
 
   // Wiki search suggestions + local list
   useEffect(() => {
@@ -1445,6 +1572,45 @@ export default function QuestHelper() {
           🗺️ {worldMap.title}
         </div>
         <button
+          onClick={toggleRouteMode}
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: "50%",
+            background: routeMode ? C.gold : C.panelSoft,
+            color: routeMode ? C.ink : C.gold,
+            border: `1px solid ${routeMode ? C.gold : C.border}`,
+            fontSize: 15,
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+          title="Measure route"
+        >
+          📏
+        </button>
+        {[0, 1, 2, 3].map((p) => (
+          <button
+            key={p}
+            onClick={() => setMapFloor(p)}
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 8,
+              background: floor === p ? C.gold : "transparent",
+              color: floor === p ? C.ink : C.textDim,
+              border: `1px solid ${floor === p ? C.gold : C.borderSoft}`,
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: "pointer",
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+            title={`Floor ${p}`}
+          >
+            {p}
+          </button>
+        ))}
+        <button
           onClick={() => setWorldMap(null)}
           style={{
             width: 34,
@@ -1456,11 +1622,26 @@ export default function QuestHelper() {
             fontSize: 15,
             cursor: "pointer",
             lineHeight: 1,
+            flexShrink: 0,
           }}
         >
           ✕
         </button>
       </div>
+      {(routeMode || routeInfo) && (
+        <div
+          style={{
+            padding: "8px 14px",
+            fontSize: 13,
+            color: routeInfo ? C.gold : C.textDim,
+            borderBottom: `1px solid ${C.borderSoft}`,
+            background: C.panel,
+          }}
+        >
+          {routeInfo ||
+            "📏 Tap your start point, then your destination."}
+        </div>
+      )}
       {mapError ? (
         <div style={{ padding: 30, textAlign: "center", color: C.textDim }}>
           {mapError}
@@ -1930,6 +2111,8 @@ export default function QuestHelper() {
                         y: quest.meta.startCoords.y,
                         title: "Start point",
                         marker: true,
+                        plane: quest.meta.startCoords.plane,
+                        mapId: quest.meta.startCoords.mapId,
                       });
                     }
                   }}
@@ -2321,7 +2504,7 @@ export default function QuestHelper() {
                   overflowY: "auto",
                 }}
               >
-                <span>{step.text}</span>
+                <span>{renderRich(step.text)}</span>
 
                 {step.images.map((src) => (
                   <img
@@ -2414,7 +2597,7 @@ export default function QuestHelper() {
                     <div style={{ marginTop: 12, fontSize: 14, lineHeight: 1.5 }}>
                       {step.info.map((inf, i) => (
                         <div key={i} style={{ padding: "3px 0" }}>
-                          ℹ️ {inf}
+                          ℹ️ {renderRich(inf)}
                         </div>
                       ))}
                     </div>
@@ -2524,7 +2707,14 @@ export default function QuestHelper() {
                   setLookup(null);
                   setWorldMap(
                     c
-                      ? { x: c.x, y: c.y, title, marker: true }
+                      ? {
+                          x: c.x,
+                          y: c.y,
+                          title,
+                          marker: true,
+                          plane: c.plane,
+                          mapId: c.mapId,
+                        }
                       : { x: 3222, y: 3218, title: "Gielinor", marker: false }
                   );
                 }}
@@ -2618,7 +2808,7 @@ export default function QuestHelper() {
                       textDecoration: isPast ? "line-through" : "none",
                     }}
                   >
-                    {st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text}
+                    {(st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text).replace(/[\u0001\u0002]/g, "")}
                   </span>
                 </button>
               );
