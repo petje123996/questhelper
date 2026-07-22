@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
-// Flow: quest-info & vereisten → items afvinken → stappen-wizard.
-// Wereldkaart: Leaflet + officiële wiki-tiles, NPC's als marker.
+// Flow: quest info & requirements → item checklist → step wizard.
+// World map: Leaflet + official wiki tiles, NPC markers.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -76,9 +76,9 @@ type Lookup = {
   coords: Coords | null;
   error: string | null;
 };
-type WorldMap = { x: number; y: number; title: string };
+type WorldMap = { x: number; y: number; title: string; marker: boolean };
 
-// Leaflet 1x laden vanaf CDN
+// Load Leaflet once from CDN
 let leafletPromise: Promise<any> | null = null;
 function loadLeaflet(): Promise<any> {
   const w = window as any;
@@ -93,7 +93,7 @@ function loadLeaflet(): Promise<any> {
     const s = document.createElement("script");
     s.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
     s.onload = () => resolve((window as any).L);
-    s.onerror = () => reject(new Error("Leaflet laden mislukt"));
+    s.onerror = () => reject(new Error("Failed to load Leaflet"));
     document.head.appendChild(s);
   });
   return leafletPromise;
@@ -122,7 +122,7 @@ function wikiUrl(page: string): string {
   return WIKI + "/w/" + encodeURIComponent(page.replace(/ /g, "_"));
 }
 
-// Game-coördinaten uit wiki-pagina-HTML vissen (ingebedde kaartjes)
+// Extract game coordinates from wiki page HTML (embedded maps)
 function extractCoords(html: string): Coords | null {
   const valid = (x: number, y: number) =>
     x >= 1000 && x <= 13000 && y >= 1000 && y <= 13000 ? { x, y } : null;
@@ -149,7 +149,7 @@ function extractCoords(html: string): Coords | null {
   return null;
 }
 
-// Officiële OSRS combat level formule
+// Official OSRS combat level formula
 function calcCombat(skills: Record<string, number>): number {
   const g = (n: string) => skills[n] ?? 1;
   const base = 0.25 * (g("defence") + Math.max(g("hitpoints"), 10) + Math.floor(g("prayer") / 2));
@@ -159,14 +159,14 @@ function calcCombat(skills: Record<string, number>): number {
   return Math.floor(base + Math.max(melee, range, mage));
 }
 
-// Hoogste "(level X)" uit een monster-omschrijving
+// Highest "(level X)" found in an enemy description
 function enemyLevel(s: string): number | null {
   const matches = Array.from(s.matchAll(/levels?\s*(\d+)/gi));
   if (!matches.length) return null;
   return Math.max(...matches.map((m) => parseInt(m[1], 10)));
 }
 
-// Splitst "Bucket of milk (can be bought at...)" in naam + extra info
+// Split "Bucket of milk (can be bought at...)" into name + extra info
 function splitItem(raw: string): Item {
   const m = raw.match(/^(.*?)\s*\((.+)\)\s*$/);
   if (m && m[1].trim()) {
@@ -177,7 +177,7 @@ function splitItem(raw: string): Item {
 
 async function fetchJson(url: string): Promise<any> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error("Wiki gaf status " + res.status);
+  if (!res.ok) throw new Error("Wiki returned status " + res.status);
   return res.json();
 }
 
@@ -194,7 +194,7 @@ function saveStored(key: string, val: any): void {
   try {
     localStorage.setItem(key, JSON.stringify(val));
   } catch {
-    /* opslag niet beschikbaar */
+    /* storage unavailable */
   }
 }
 
@@ -202,13 +202,13 @@ function removeStored(key: string): void {
   try {
     localStorage.removeItem(key);
   } catch {
-    /* opslag niet beschikbaar */
+    /* storage unavailable */
   }
 }
 
 const storageKey = (name: string) => "qh-quest-" + name.replace(/[\s/\\'"]+/g, "_");
 
-// Eigen tekst van elk li-element, zonder geneste lijsten
+// Own text of each li element, excluding nested lists
 function ownLiTexts(container: Element): string[] {
   const out: string[] = [];
   container.querySelectorAll("li").forEach((li) => {
@@ -220,7 +220,7 @@ function ownLiTexts(container: Element): string[] {
   return out;
 }
 
-// Afbeeldingen met bijschrift uit een volledige gids-pagina
+// Captioned images from a full guide page
 function parseGallery(html: string): GalleryImg[] {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const out: GalleryImg[] = [];
@@ -240,7 +240,7 @@ function parseGallery(html: string): GalleryImg[] {
   return out.slice(0, 30);
 }
 
-// Splitst een stap in tekst + info + afbeeldingen + links
+// Split a step into text + info + images + links
 function makeStep(li: Element, section: string): Step | null {
   const clone = li.cloneNode(true) as Element;
   clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
@@ -285,7 +285,7 @@ function makeStep(li: Element, section: string): Step | null {
   return { text: cleanText(stripped), info: infos, images, links, section };
 }
 
-// Zet wiki-HTML om naar stappen + items + quest-info
+// Turn wiki HTML into steps + items + quest info
 function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const root = doc.body;
@@ -331,7 +331,7 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
           : [];
       } else if (/requirement/.test(label)) {
         ownLiTexts(td).forEach((t) => {
-          if (t.endsWith(":")) return; // kopregels zoals "Completion of..."
+          if (t.endsWith(":")) return; // header lines like "Completion of..."
           const m = t.match(/^(\d+)\s+([A-Za-z]+)(.*)$/);
           if (m && SKILLS.has(m[2].toLowerCase())) {
             meta.skillReqs.push({
@@ -430,7 +430,7 @@ export default function QuestHelper() {
       setRsn(savedPlayer.name);
     }
 
-    // Volledige questlijst van de wiki (max 1x per week verversen)
+    // Full quest list from the wiki (refresh at most weekly)
     const cached = loadStored("qh-questlist");
     if (cached && Array.isArray(cached.names) && cached.names.length > 0) {
       setAllQuests(cached.names);
@@ -466,12 +466,12 @@ export default function QuestHelper() {
           saveStored("qh-questlist", { ts: Date.now(), names });
         }
       } catch {
-        /* POPULAR blijft als fallback */
+        /* POPULAR remains as fallback */
       }
     })();
   }, []);
 
-  // Wereldkaart initialiseren wanneer geopend
+  // Initialise the world map when opened
   useEffect(() => {
     if (!worldMap) return;
     let map: any = null;
@@ -479,7 +479,7 @@ export default function QuestHelper() {
     setMapError(null);
     (async () => {
       try {
-        // Actuele tile-versie ophalen (1 dag gecachet)
+        // Get the current tile version (cached for a day)
         let v: string | null = null;
         const cached = loadStored("qh-mapver");
         if (cached && cached.v && Date.now() - (cached.ts || 0) < 86400000) {
@@ -516,22 +516,24 @@ export default function QuestHelper() {
           maxNativeZoom: 3,
           tileSize: 256,
           attribution:
-            'Kaart © Jagex · tiles <a href="https://weirdgloop.org/licensing" target="_blank" rel="noopener">RuneScape Wiki</a>',
+            'Map © Jagex · tiles <a href="https://weirdgloop.org/licensing" target="_blank" rel="noopener">RuneScape Wiki</a>',
         }).addTo(map);
 
         const pos = [worldMap.y + 0.5, worldMap.x + 0.5];
-        map.setView(pos, 2);
-        L.circleMarker(pos, {
-          radius: 9,
-          color: "#E7B84C",
-          weight: 3,
-          fillColor: "#C96A5B",
-          fillOpacity: 0.9,
-        })
-          .addTo(map)
-          .bindTooltip(worldMap.title);
+        map.setView(pos, worldMap.marker ? 2 : 0);
+        if (worldMap.marker) {
+          L.circleMarker(pos, {
+            radius: 9,
+            color: "#E7B84C",
+            weight: 3,
+            fillColor: "#C96A5B",
+            fillOpacity: 0.9,
+          })
+            .addTo(map)
+            .bindTooltip(worldMap.title);
+        }
       } catch {
-        if (!cancelled) setMapError("Kaart kon niet geladen worden.");
+        if (!cancelled) setMapError("The map couldn't be loaded.");
       }
     })();
     return () => {
@@ -540,7 +542,7 @@ export default function QuestHelper() {
     };
   }, [worldMap]);
 
-  // Wiki-zoeksuggesties + lokale lijst
+  // Wiki search suggestions + local list
   useEffect(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
@@ -563,7 +565,7 @@ export default function QuestHelper() {
         const merged = Array.from(new Set([...local, ...names])).slice(0, 8);
         setSuggest(merged);
       } catch {
-        /* lokale lijst blijft staan */
+        /* keep the local list */
       }
     }, 350);
     return () => clearTimeout(debounceRef.current);
@@ -578,7 +580,7 @@ export default function QuestHelper() {
       const res = await fetch(`/api/hiscores?player=${encodeURIComponent(name)}`);
       const data = await res.json();
       if (!res.ok || !Array.isArray(data.skills)) {
-        throw new Error(data.error || "Speler niet gevonden");
+        throw new Error(data.error || "Player not found");
       }
       const skills: Record<string, number> = {};
       data.skills.forEach((s: any) => {
@@ -588,7 +590,7 @@ export default function QuestHelper() {
       setPlayer(p);
       saveStored("qh-rsn", p);
     } catch (e: any) {
-      setStatsError(e?.message || "Stats laden mislukt");
+      setStatsError(e?.message || "Failed to load stats");
     } finally {
       setStatsLoading(false);
     }
@@ -623,7 +625,7 @@ export default function QuestHelper() {
     });
   };
 
-  // Zoekt of een vereiste-regel een questnaam is
+  // Check whether a requirement line is a quest name
   const matchQuest = (req: string): string | null => {
     const r = req.toLowerCase();
     const exact = allQuests.find((n) => n.toLowerCase() === r);
@@ -699,11 +701,11 @@ export default function QuestHelper() {
         );
         usedMainPage = true;
       }
-      if (data.error) throw new Error("Quest niet gevonden op de wiki.");
+      if (data.error) throw new Error("Quest not found on the wiki.");
       const html = data.parse.text["*"];
       const parsed = parseGuide(html);
       if (!parsed.steps.length) {
-        throw new Error("Geen stappen gevonden voor deze pagina.");
+        throw new Error("No steps found on this page.");
       }
       const displayName = String(data.parse.title).replace("/Quick guide", "");
       const q: Quest = { name: displayName, ...parsed };
@@ -727,7 +729,7 @@ export default function QuestHelper() {
       setItemsChecked(items);
       updateRecent(displayName, p === "steps" ? step : 0, q.steps.length);
 
-      // Galerij uit de volledige gids op de achtergrond laden
+      // Load the gallery from the full guide in the background
       if (usedMainPage) {
         setGallery(parseGallery(html));
       } else {
@@ -745,18 +747,18 @@ export default function QuestHelper() {
               setGallery([...g, ...own.filter((x) => !seen.has(x.src))]);
             }
           } catch {
-            /* geen galerij, geen ramp */
+            /* no gallery, no problem */
           }
         })();
       }
     } catch (e: any) {
-      setError(e?.message || "Laden mislukt. Controleer je verbinding.");
+      setError(e?.message || "Loading failed. Check your connection.");
     } finally {
       setLoading(false);
     }
   };
 
-  // Zoekt afbeeldingen + coördinaten van een wiki-pagina
+  // Fetch images + coordinates for a wiki page
   const lookupPage = async (page: string, label: string) => {
     setLookup({ title: label, page, loading: true, images: [], coords: null, error: null });
     try {
@@ -765,7 +767,7 @@ export default function QuestHelper() {
           page
         )}`
       );
-      if (data.error) throw new Error("Pagina niet gevonden");
+      if (data.error) throw new Error("Page not found");
       const html: string = data.parse.text["*"];
       const coords = extractCoords(html);
       const doc = new DOMParser().parseFromString(html, "text/html");
@@ -788,13 +790,11 @@ export default function QuestHelper() {
         images,
         coords,
         error:
-          images.length || coords
-            ? null
-            : "Geen afbeeldingen gevonden op deze pagina.",
+          images.length || coords ? null : "No images found on this page.",
       });
     } catch {
       setLookup((prev) =>
-        prev ? { ...prev, loading: false, error: "Laden mislukt." } : null
+        prev ? { ...prev, loading: false, error: "Loading failed." } : null
       );
     }
   };
@@ -864,7 +864,7 @@ export default function QuestHelper() {
       quest.meta.enemies.length > 0
     : false;
 
-  // ── Stijlen ──
+  // ── Styles ──
   const frame: React.CSSProperties = {
     minHeight: "100vh",
     background: C.bg,
@@ -925,8 +925,22 @@ export default function QuestHelper() {
     fontSize: 15,
     cursor: "pointer",
   };
+  const dashed: React.CSSProperties = {
+    borderTop: `1px dashed ${C.goldDim}`,
+    margin: "14px 0 0",
+  };
+  const toolChip: React.CSSProperties = {
+    padding: "7px 12px",
+    background: "rgba(58,46,25,.08)",
+    color: C.ink,
+    border: "1.5px solid rgba(58,46,25,.45)",
+    borderRadius: 16,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+  };
 
-  // ── Overlay (galerij / opzoeken) ──
+  // ── Overlay (gallery / lookup) ──
   const overlay = (title: string, onClose: () => void, children: React.ReactNode) => (
     <div
       onClick={onClose}
@@ -985,7 +999,7 @@ export default function QuestHelper() {
     </div>
   );
 
-  // ── Wereldkaart (vollscherm) ──
+  // ── World map (fullscreen) ──
   const worldMapOverlay = worldMap && (
     <div
       style={{
@@ -1057,14 +1071,14 @@ export default function QuestHelper() {
               ⚔️ Quest Helper
             </div>
             <div style={{ color: C.textDim, fontSize: 13, marginTop: 2 }}>
-              Quick guides van de OSRS Wiki, naast je spel
+              OSRS Wiki quick guides, right next to your game
             </div>
           </div>
 
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Zoek een quest…"
+            placeholder="Search for a quest…"
             style={{
               width: "100%",
               boxSizing: "border-box",
@@ -1108,17 +1122,17 @@ export default function QuestHelper() {
 
           <button
             onClick={() =>
-              setWorldMap({ x: 3222, y: 3218, title: "Gielinor · Lumbridge" })
+              setWorldMap({ x: 3222, y: 3218, title: "Gielinor", marker: false })
             }
             style={{ ...ghostBtn, marginTop: 10, color: C.gold, borderColor: C.border }}
           >
-            🗺️ Open wereldkaart
+            🗺️ Open world map
           </button>
 
           {recent.length > 0 && (
             <div style={{ marginTop: 26 }}>
               <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-                Verder gaan
+                Continue
               </div>
               {recent.map((r) => {
                 const p = r.total ? Math.round((r.done / r.total) * 100) : 0;
@@ -1203,13 +1217,13 @@ export default function QuestHelper() {
           {/* RSN / stats */}
           <div style={{ marginTop: 26 }}>
             <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-              👤 Jouw stats
+              👤 Your stats
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <input
                 value={rsn}
                 onChange={(e) => setRsn(e.target.value)}
-                placeholder="RuneScape-naam…"
+                placeholder="RuneScape name…"
                 maxLength={12}
                 style={{
                   flex: 1,
@@ -1240,12 +1254,12 @@ export default function QuestHelper() {
                   opacity: statsLoading || !rsn.trim() ? 0.5 : 1,
                 }}
               >
-                {statsLoading ? "…" : player ? "Ververs" : "Laden"}
+                {statsLoading ? "…" : player ? "Refresh" : "Load"}
               </button>
             </div>
             {player && !statsError && (
               <div style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
-                ✓ Stats geladen voor {player.name}
+                ✓ Stats loaded for {player.name}
                 {combatLevel !== null ? ` · Combat level ${combatLevel}` : ""}
               </div>
             )}
@@ -1256,14 +1270,15 @@ export default function QuestHelper() {
             )}
             {!player && !statsError && (
               <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
-                Met je stats zie je per quest of je de skill-vereisten haalt.
+                With your stats loaded you'll see whether you meet each quest's
+                skill requirements.
               </div>
             )}
           </div>
 
           <div style={{ marginTop: 26 }}>
             <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-              Alle quests
+              All quests
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {allQuests
@@ -1296,10 +1311,10 @@ export default function QuestHelper() {
     );
   }
 
-  // ── Quest-weergave ──
+  // ── Quest view ──
   return (
     <div style={{ ...frame, display: "flex", flexDirection: "column" }}>
-      {/* Kopregel */}
+      {/* Header */}
       <div
         style={{
           background: C.bg,
@@ -1322,19 +1337,19 @@ export default function QuestHelper() {
                 textOverflow: "ellipsis",
               }}
             >
-              {quest ? quest.name : "Laden…"}
+              {quest ? quest.name : "Loading…"}
             </div>
             {quest && phase === "info" && (
-              <div style={{ fontSize: 12, color: C.textDim }}>Quest-info</div>
+              <div style={{ fontSize: 12, color: C.textDim }}>Quest info</div>
             )}
             {quest && phase === "steps" && (
               <div style={{ fontSize: 12, color: C.textDim }}>
-                Stap {stepIdx + 1} van {total} · {pct}%
+                Step {stepIdx + 1} of {total} · {pct}%
               </div>
             )}
             {quest && phase === "items" && (
               <div style={{ fontSize: 12, color: C.textDim }}>
-                Benodigde items · {itemsChecked.size}/{quest.items.length}
+                Required items · {itemsChecked.size}/{quest.items.length}
               </div>
             )}
           </div>
@@ -1390,14 +1405,14 @@ export default function QuestHelper() {
       >
         {loading && (
           <div style={{ textAlign: "center", padding: 40, color: C.textDim }}>
-            Quick guide ophalen van de wiki…
+            Fetching the quick guide from the wiki…
           </div>
         )}
 
         {error && (
           <div style={{ ...card, borderColor: C.red, padding: 16, color: C.parch }}>
             <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>
-              Kon de gids niet laden
+              Couldn't load the guide
             </div>
             {error}
             <div style={{ marginTop: 10 }}>
@@ -1412,13 +1427,13 @@ export default function QuestHelper() {
                   cursor: "pointer",
                 }}
               >
-                Terug naar zoeken
+                Back to search
               </button>
             </div>
           </div>
         )}
 
-        {/* Fase 0: quest-info & vereisten */}
+        {/* Phase 0: quest info & requirements */}
         {quest && phase === "info" && (
           <>
             <div style={{ flex: 1 }}>
@@ -1436,19 +1451,19 @@ export default function QuestHelper() {
               {quest.meta.start && (
                 <div style={{ ...card, padding: "11px 14px", marginBottom: 14 }}>
                   <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, marginBottom: 3 }}>
-                    📍 STARTPUNT
+                    📍 START POINT
                   </div>
                   <div style={{ fontSize: 14, color: C.parch }}>{quest.meta.start}</div>
                 </div>
               )}
 
               <div style={{ ...goldTitle, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
-                Vereisten
+                Requirements
               </div>
 
               {!hasReqs && (
                 <div style={{ color: C.textDim, fontSize: 14 }}>
-                  Geen vereisten — je kunt meteen beginnen! 🎉
+                  No requirements — you can start right away! 🎉
                 </div>
               )}
 
@@ -1494,7 +1509,8 @@ export default function QuestHelper() {
 
               {quest.meta.skillReqs.length > 0 && !player && (
                 <div style={{ fontSize: 12, color: C.textDim, margin: "4px 0 10px" }}>
-                  Tip: vul je RSN in op de startpagina, dan check ik je levels automatisch.
+                  Tip: enter your RSN on the home screen and I'll check your levels
+                  automatically.
                 </div>
               )}
 
@@ -1577,7 +1593,8 @@ export default function QuestHelper() {
 
               {quest.meta.otherReqs.some((t) => matchQuest(t) && !completed.has(matchQuest(t) as string)) && (
                 <div style={{ fontSize: 12, color: C.textDim, margin: "4px 0 10px" }}>
-                  Tik op een quest om hem te openen, of op het vakje als je hem al gedaan hebt.
+                  Tap a quest to open it, or tap the box if you've already
+                  completed it.
                 </div>
               )}
 
@@ -1592,11 +1609,11 @@ export default function QuestHelper() {
                     }}
                   >
                     <div style={{ ...goldTitle, fontSize: 14, fontWeight: 700 }}>
-                      ⚔️ Te verslaan
+                      ⚔️ Enemies to defeat
                     </div>
                     {combatLevel !== null && (
                       <span style={{ fontSize: 12, color: C.textDim }}>
-                        Jouw combat: <b style={{ color: C.gold }}>{combatLevel}</b>
+                        Your combat: <b style={{ color: C.gold }}>{combatLevel}</b>
                       </span>
                     )}
                   </div>
@@ -1638,7 +1655,7 @@ export default function QuestHelper() {
                         </span>
                         {ok === false && (
                           <span style={{ fontSize: 12, color: C.red, fontWeight: 700 }}>
-                            hoger dan jij
+                            above your level
                           </span>
                         )}
                       </div>
@@ -1646,23 +1663,23 @@ export default function QuestHelper() {
                   })}
                   {combatLevel !== null && (
                     <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
-                      Indicatie op basis van combat level — gear en tactiek tellen ook mee.
+                      Based on combat level only — gear and tactics matter too.
                     </div>
                   )}
                 </div>
               )}
             </div>
             <button onClick={afterInfo} style={{ ...bigBtn, marginTop: 16 }}>
-              {quest.items.length ? "Naar benodigde items →" : "Start quest →"}
+              {quest.items.length ? "To required items →" : "Start quest →"}
             </button>
           </>
         )}
 
-        {/* Fase 1: items afvinken */}
+        {/* Phase 1: item checklist */}
         {quest && phase === "items" && (
           <>
             <div style={{ ...goldTitle, fontSize: 16, fontWeight: 700, marginBottom: 10 }}>
-              🎒 Verzamel deze items
+              🎒 Gather these items
             </div>
             <div style={{ flex: 1 }}>
               {quest.items.map((it, i) => {
@@ -1766,7 +1783,7 @@ export default function QuestHelper() {
           </>
         )}
 
-        {/* Fase 2: stappen-wizard, elke stap eigen scherm */}
+        {/* Phase 2: step wizard, each step on its own screen */}
         {quest && phase === "steps" && step && (
           <>
             <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
@@ -1799,64 +1816,7 @@ export default function QuestHelper() {
                   overflowY: "auto",
                 }}
               >
-                <span>
-                  {step.text}
-                  {step.info.length > 0 && (
-                    <button
-                      onClick={() => setStepInfoOpen(!stepInfoOpen)}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        verticalAlign: "middle",
-                        marginLeft: 10,
-                        width: 28,
-                        height: 28,
-                        borderRadius: "50%",
-                        background: stepInfoOpen ? C.ink : "transparent",
-                        color: stepInfoOpen ? C.parch : C.ink,
-                        border: `2px solid ${C.ink}`,
-                        fontSize: 14,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        fontFamily: "Georgia, serif",
-                        lineHeight: 1,
-                      }}
-                    >
-                      i
-                    </button>
-                  )}
-                </span>
-
-                {step.links.length > 0 && (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: 6,
-                      marginTop: 14,
-                    }}
-                  >
-                    {step.links.map((l) => (
-                      <button
-                        key={l.page}
-                        onClick={() => lookupPage(l.page, l.label)}
-                        style={{
-                          padding: "6px 11px",
-                          background: "rgba(58,46,25,.08)",
-                          color: C.ink,
-                          border: `1.5px solid rgba(58,46,25,.45)`,
-                          borderRadius: 16,
-                          fontSize: 13,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        🔍 {l.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <span>{step.text}</span>
 
                 {step.images.map((src) => (
                   <img
@@ -1874,22 +1834,65 @@ export default function QuestHelper() {
                     }}
                   />
                 ))}
+
+                {/* Toolbar: permanent dashed divider with all step actions below */}
+                {(step.links.length > 0 || step.info.length > 0) && (
+                  <>
+                    <div style={dashed} />
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        gap: 6,
+                        marginTop: 12,
+                      }}
+                    >
+                      {step.links.map((l) => (
+                        <button
+                          key={l.page}
+                          onClick={() => lookupPage(l.page, l.label)}
+                          style={toolChip}
+                        >
+                          🔍 {l.label}
+                        </button>
+                      ))}
+                      {step.info.length > 0 && (
+                        <button
+                          onClick={() => setStepInfoOpen(!stepInfoOpen)}
+                          style={{
+                            ...toolChip,
+                            width: 32,
+                            height: 32,
+                            padding: 0,
+                            borderRadius: "50%",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontFamily: "Georgia, serif",
+                            fontSize: 15,
+                            background: stepInfoOpen ? C.ink : "rgba(58,46,25,.08)",
+                            color: stepInfoOpen ? C.parch : C.ink,
+                          }}
+                        >
+                          i
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+
                 {stepInfoOpen && step.info.length > 0 && (
-                  <div
-                    style={{
-                      marginTop: 16,
-                      paddingTop: 14,
-                      borderTop: `1px dashed ${C.goldDim}`,
-                      fontSize: 14,
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {step.info.map((inf, i) => (
-                      <div key={i} style={{ padding: "3px 0" }}>
-                        ℹ️ {inf}
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    <div style={dashed} />
+                    <div style={{ marginTop: 12, fontSize: 14, lineHeight: 1.5 }}>
+                      {step.info.map((inf, i) => (
+                        <div key={i} style={{ padding: "3px 0" }}>
+                          ℹ️ {inf}
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1901,7 +1904,7 @@ export default function QuestHelper() {
                   background: isLast ? C.green : C.gold,
                 }}
               >
-                {isLast ? "Quest voltooid 🏆" : "Volgende ✓"}
+                {isLast ? "Quest complete 🏆" : "Next ✓"}
               </button>
               <button
                 onClick={prevStep}
@@ -1912,13 +1915,13 @@ export default function QuestHelper() {
                   opacity: stepIdx === 0 ? 0.35 : 1,
                 }}
               >
-                ← Vorige
+                ← Previous
               </button>
             </div>
           </>
         )}
 
-        {/* Fase 3: voltooid */}
+        {/* Phase 3: complete */}
         {quest && phase === "done" && (
           <div
             style={{
@@ -1939,28 +1942,28 @@ export default function QuestHelper() {
                 marginTop: 10,
               }}
             >
-              Quest voltooid!
+              Quest complete!
             </div>
             <div style={{ color: C.textDim, marginTop: 6 }}>
-              {quest.name} is afgerond en uit je lijst gehaald.
+              {quest.name} has been completed and removed from your list.
             </div>
             <button
               onClick={() => setView("home")}
               style={{ ...bigBtn, marginTop: 26, maxWidth: 300 }}
             >
-              Terug naar start
+              Back to home
             </button>
           </div>
         )}
       </div>
 
-      {/* Overlay: NPC/locatie opzoeken */}
+      {/* Overlay: NPC/location lookup */}
       {lookup &&
         overlay(`🔍 ${lookup.title}`, () => setLookup(null), (
           <>
             {lookup.loading && (
               <div style={{ color: C.textDim, padding: "20px 0", textAlign: "center" }}>
-                Zoeken op de wiki…
+                Searching the wiki…
               </div>
             )}
             {lookup.error && !lookup.loading && (
@@ -1968,17 +1971,21 @@ export default function QuestHelper() {
                 {lookup.error}
               </div>
             )}
-            {lookup.coords && !lookup.loading && (
+            {!lookup.loading && (
               <button
                 onClick={() => {
-                  const c = lookup.coords as Coords;
+                  const c = lookup.coords;
                   const title = lookup.title;
                   setLookup(null);
-                  setWorldMap({ x: c.x, y: c.y, title });
+                  setWorldMap(
+                    c
+                      ? { x: c.x, y: c.y, title, marker: true }
+                      : { x: 3222, y: 3218, title: "Gielinor", marker: false }
+                  );
                 }}
                 style={{ ...bigBtn, marginBottom: 12 }}
               >
-                🗺️ Toon op wereldkaart
+                {lookup.coords ? "🗺️ Show on world map" : "🗺️ Open world map"}
               </button>
             )}
             {lookup.images.map((src) => (
@@ -2011,14 +2018,14 @@ export default function QuestHelper() {
                 fontSize: 14,
               }}
             >
-              Open op wiki ↗
+              Open on wiki ↗
             </a>
           </>
         ))}
 
-      {/* Overlay: galerij uit de volledige gids */}
+      {/* Overlay: gallery from the full guide */}
       {galleryOpen &&
-        overlay("🖼️ Kaarten & afbeeldingen", () => setGalleryOpen(false), (
+        overlay("🖼️ Maps & images", () => setGalleryOpen(false), (
           <>
             {gallery.map((g) => (
               <div key={g.src} style={{ marginBottom: 16 }}>
