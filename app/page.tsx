@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest info & requirements → item checklist → step wizard.
-// World map: Leaflet + official wiki tiles, NPC & start markers.
+// Profile tracks quest points and XP earned from completed quests.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -65,7 +65,13 @@ type Step = {
   section: string;
 };
 type Item = { name: string; info: string | null };
-type Quest = { name: string; steps: Step[]; items: Item[]; meta: Meta };
+type Quest = {
+  name: string;
+  steps: Step[];
+  items: Item[];
+  meta: Meta;
+  rewards: string[];
+};
 type RecentItem = { name: string; done: number; total: number };
 type Player = { name: string; skills: Record<string, number> };
 type GalleryImg = { src: string; caption: string };
@@ -78,6 +84,8 @@ type Lookup = {
   error: string | null;
 };
 type WorldMap = { x: number; y: number; title: string; marker: boolean };
+type QuestReward = { qp: number; xp: Record<string, number> };
+type Progress = Record<string, QuestReward>;
 
 // Load Leaflet once from CDN
 let leafletPromise: Promise<any> | null = null;
@@ -111,6 +119,14 @@ function cleanText(s: string): string {
 function normalizeSkill(s: string): string {
   const t = s.toLowerCase().trim();
   return t === "runecrafting" ? "runecraft" : t;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function fmtNum(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
 }
 
 function resolveSrc(raw: string): string {
@@ -174,6 +190,26 @@ function splitItem(raw: string): Item {
     return { name: cleanText(m[1]), info: cleanText(m[2]) };
   }
   return { name: cleanText(raw), info: null };
+}
+
+// Extract quest points + XP amounts from reward lines
+function parseRewardStats(rewards: string[]): QuestReward {
+  let qp = 0;
+  const xp: Record<string, number> = {};
+  rewards.forEach((line) => {
+    const q = line.match(/(\d+)\s+quest points?/i);
+    if (q) qp = Math.max(qp, parseInt(q[1], 10));
+    const rx = /([\d,]+(?:\.\d+)?)\s+([A-Za-z]+)\s+(?:experience|exp\b|xp\b)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = rx.exec(line))) {
+      const amount = parseFloat(m[1].replace(/,/g, ""));
+      const skill = normalizeSkill(m[2]);
+      if (SKILLS.has(skill) && amount > 0) {
+        xp[skill] = (xp[skill] || 0) + amount;
+      }
+    }
+  });
+  return { qp, xp };
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -286,8 +322,13 @@ function makeStep(li: Element, section: string): Step | null {
   return { text: cleanText(stripped), info: infos, images, links, section };
 }
 
-// Turn wiki HTML into steps + items + quest info
-function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } {
+// Turn wiki HTML into steps + items + quest info + rewards
+function parseGuide(html: string): {
+  steps: Step[];
+  items: Item[];
+  meta: Meta;
+  rewards: string[];
+} {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const root = doc.body;
 
@@ -298,6 +339,7 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
     .forEach((el) => el.remove());
 
   const items: Item[] = [];
+  const rewards: string[] = [];
   const meta: Meta = {
     difficulty: null,
     length: null,
@@ -307,6 +349,17 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
     otherReqs: [],
     enemies: [],
   };
+
+  // Reward boxes (tables/divs with "reward" in the class name)
+  root.querySelectorAll("table, div").forEach((el) => {
+    const cls = (el.getAttribute("class") || "").toLowerCase();
+    if (!cls.includes("reward")) return;
+    el.querySelectorAll("tr, li").forEach((row) => {
+      const t = cleanText(row.textContent || "");
+      if (t && t.length < 200) rewards.push(t);
+    });
+    el.remove();
+  });
 
   const details = root.querySelector("table.questdetails");
   if (details) {
@@ -356,16 +409,23 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
     details.remove();
   }
 
-  const SKIP = /reference|navigat|see also|trivia|gallery|changes|reward/i;
+  const SKIP = /reference|navigat|see also|trivia|gallery|changes/i;
   const steps: Step[] = [];
   let sectionTitle = "Walkthrough";
-  let skipping = false;
+  let mode: "steps" | "skip" | "rewards" = "steps";
 
   const pushLis = (listEl: Element) => {
     Array.from(listEl.children).forEach((li) => {
       if (li.tagName !== "LI") return;
-      const st = makeStep(li, sectionTitle);
-      if (st) steps.push(st);
+      if (mode === "rewards") {
+        const clone = li.cloneNode(true) as Element;
+        clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
+        const t = cleanText(clone.textContent || "");
+        if (t) rewards.push(t);
+      } else {
+        const st = makeStep(li, sectionTitle);
+        if (st) steps.push(st);
+      }
       li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => pushLis(sub));
     });
   };
@@ -375,11 +435,17 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
       const tag = child.tagName;
       if (tag === "H2" || tag === "H3") {
         const title = cleanText(child.textContent || "");
-        skipping = SKIP.test(title);
-        if (!skipping && title) sectionTitle = title;
+        if (/reward/i.test(title)) {
+          mode = "rewards";
+        } else if (SKIP.test(title)) {
+          mode = "skip";
+        } else {
+          mode = "steps";
+          if (title) sectionTitle = title;
+        }
         return;
       }
-      if (skipping) return;
+      if (mode === "skip") return;
       if (tag === "UL" || tag === "OL") {
         if (!child.closest("table")) pushLis(child);
         return;
@@ -389,7 +455,7 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
   };
   walk(root);
 
-  return { steps, items, meta };
+  return { steps, items, meta, rewards };
 }
 
 export default function QuestHelper() {
@@ -400,6 +466,9 @@ export default function QuestHelper() {
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [allQuests, setAllQuests] = useState<string[]>(POPULAR);
   const [completed, setCompleted] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<Progress>({});
+  const [lastReward, setLastReward] = useState<QuestReward | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [quest, setQuest] = useState<Quest | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
@@ -431,6 +500,9 @@ export default function QuestHelper() {
 
     const comp = loadStored("qh-completed");
     if (Array.isArray(comp)) setCompleted(new Set(comp));
+
+    const prog = loadStored("qh-progress");
+    if (prog && typeof prog === "object") setProgress(prog);
 
     const savedPlayer = loadStored("qh-rsn");
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
@@ -487,7 +559,6 @@ export default function QuestHelper() {
     setMapError(null);
     (async () => {
       try {
-        // Get the current tile version (cached for a day)
         let v: string | null = null;
         const cached = loadStored("qh-mapver");
         if (cached && cached.v && Date.now() - (cached.ts || 0) < 86400000) {
@@ -611,15 +682,6 @@ export default function QuestHelper() {
 
   const combatLevel = player ? calcCombat(player.skills) : null;
 
-  const markCompleted = useCallback((name: string) => {
-    setCompleted((prev) => {
-      const next = new Set(prev);
-      next.add(name);
-      saveStored("qh-completed", Array.from(next));
-      return next;
-    });
-  }, []);
-
   const toggleCompleted = (name: string) => {
     setCompleted((prev) => {
       const next = new Set(prev);
@@ -737,7 +799,7 @@ export default function QuestHelper() {
       setItemsChecked(items);
       updateRecent(displayName, p === "steps" ? step : 0, q.steps.length);
 
-      // Load the gallery from the full guide in the background
+      // Load gallery (and missing data) from the full guide in the background
       if (usedMainPage) {
         setGallery(parseGallery(html));
       } else {
@@ -749,20 +811,25 @@ export default function QuestHelper() {
               )}`
             );
             if (!d2.error) {
-              const g = parseGallery(d2.parse.text["*"]);
+              const fullHtml = d2.parse.text["*"];
+              const g = parseGallery(fullHtml);
               const own = parseGallery(html);
               const seen = new Set(g.map((x) => x.src));
               setGallery([...g, ...own.filter((x) => !seen.has(x.src))]);
-              // Start coordinates are sometimes only on the full guide page
-              if (!parsed.meta.startCoords) {
-                const c = extractCoords(d2.parse.text["*"]);
-                if (c) {
-                  setQuest((prev) =>
-                    prev && prev.name === displayName
-                      ? { ...prev, meta: { ...prev.meta, startCoords: c } }
-                      : prev
-                  );
-                }
+              // Start coordinates and rewards are sometimes only on the full page
+              const c = parsed.meta.startCoords ? null : extractCoords(fullHtml);
+              const extraRewards = parsed.rewards.length
+                ? null
+                : parseGuide(fullHtml).rewards;
+              if (c || extraRewards) {
+                setQuest((prev) => {
+                  if (!prev || prev.name !== displayName) return prev;
+                  return {
+                    ...prev,
+                    meta: c ? { ...prev.meta, startCoords: c } : prev.meta,
+                    rewards: extraRewards || prev.rewards,
+                  };
+                });
               }
             }
           } catch {
@@ -808,8 +875,7 @@ export default function QuestHelper() {
         loading: false,
         images,
         coords,
-        error:
-          images.length || coords ? null : "No images found on this page.",
+        error: images.length || coords ? null : "No images found on this page.",
       });
     } catch {
       setLookup((prev) =>
@@ -851,8 +917,21 @@ export default function QuestHelper() {
     if (!quest) return;
     setStepInfoOpen(false);
     if (stepIdx >= quest.steps.length - 1) {
+      // Quest complete: record rewards in the profile
+      const reward = parseRewardStats(quest.rewards);
+      setLastReward(reward);
+      setProgress((prev) => {
+        const next = { ...prev, [quest.name]: reward };
+        saveStored("qh-progress", next);
+        return next;
+      });
+      setCompleted((prev) => {
+        const next = new Set(prev);
+        next.add(quest.name);
+        saveStored("qh-completed", Array.from(next));
+        return next;
+      });
       setPhase("done");
-      markCompleted(quest.name);
       removeFromRecent(quest.name);
       removeStored(storageKey(quest.name));
       return;
@@ -882,6 +961,17 @@ export default function QuestHelper() {
       quest.meta.otherReqs.length > 0 ||
       quest.meta.enemies.length > 0
     : false;
+
+  // Profile totals
+  const totalQp = Object.values(progress).reduce((s, p) => s + (p.qp || 0), 0);
+  const xpTotals: Record<string, number> = {};
+  Object.values(progress).forEach((p) => {
+    Object.entries(p.xp || {}).forEach(([sk, amt]) => {
+      xpTotals[sk] = (xpTotals[sk] || 0) + amt;
+    });
+  });
+  const xpSorted = Object.entries(xpTotals).sort((a, b) => b[1] - a[1]);
+  const completedList = Array.from(completed).sort();
 
   // ── Styles ──
   const frame: React.CSSProperties = {
@@ -958,8 +1048,19 @@ export default function QuestHelper() {
     fontWeight: 600,
     cursor: "pointer",
   };
+  const toolIcon: React.CSSProperties = {
+    ...toolChip,
+    width: 34,
+    height: 34,
+    padding: 0,
+    borderRadius: "50%",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 15,
+  };
 
-  // ── Overlay (gallery / lookup) ──
+  // ── Overlay (gallery / lookup / profile) ──
   const overlay = (title: string, onClose: () => void, children: React.ReactNode) => (
     <div
       onClick={onClose}
@@ -1017,6 +1118,108 @@ export default function QuestHelper() {
       </div>
     </div>
   );
+
+  // ── Profile overlay ──
+  const profileOverlay =
+    profileOpen &&
+    overlay("👤 Profile", () => setProfileOpen(false), (
+      <>
+        {player ? (
+          <div style={{ ...card, padding: "12px 14px", marginBottom: 12 }}>
+            <div style={{ color: C.parch, fontWeight: 700, fontSize: 16 }}>
+              {player.name}
+            </div>
+            {combatLevel !== null && (
+              <div style={{ fontSize: 13, color: C.textDim }}>
+                Combat level <b style={{ color: C.gold }}>{combatLevel}</b>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12 }}>
+            Enter your RSN on the home screen to link your stats.
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <div style={{ ...card, flex: 1, padding: "12px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.gold }}>
+              {completedList.length}
+            </div>
+            <div style={{ fontSize: 12, color: C.textDim }}>🏆 Quests done</div>
+          </div>
+          <div style={{ ...card, flex: 1, padding: "12px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.gold }}>
+              {totalQp}
+            </div>
+            <div style={{ fontSize: 12, color: C.textDim }}>⭐ Quest points</div>
+          </div>
+        </div>
+
+        <div style={{ ...goldTitle, fontSize: 15, fontWeight: 700, marginBottom: 6 }}>
+          📈 XP earned from quests
+        </div>
+        {xpSorted.length === 0 && (
+          <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12 }}>
+            No XP tracked yet — complete a quest in the app and its rewards will
+            show up here.
+          </div>
+        )}
+        {xpSorted.map(([sk, amt]) => (
+          <div
+            key={sk}
+            style={{
+              ...card,
+              display: "flex",
+              justifyContent: "space-between",
+              padding: "9px 14px",
+              marginBottom: 5,
+              fontSize: 14,
+            }}
+          >
+            <span style={{ color: C.parch }}>{capitalize(sk)}</span>
+            <span style={{ color: C.gold, fontWeight: 700 }}>
+              +{fmtNum(amt)} xp
+            </span>
+          </div>
+        ))}
+
+        <div
+          style={{
+            ...goldTitle,
+            fontSize: 15,
+            fontWeight: 700,
+            margin: "14px 0 6px",
+          }}
+        >
+          ✅ Completed quests
+        </div>
+        {completedList.length === 0 && (
+          <div style={{ fontSize: 13, color: C.textDim }}>
+            Nothing completed yet — your adventure awaits!
+          </div>
+        )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {completedList.map((n) => (
+            <span
+              key={n}
+              style={{
+                ...chip,
+                borderColor: C.green,
+                color: C.textDim,
+                fontSize: 12,
+              }}
+            >
+              ✓ {n}
+            </span>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 11, color: C.textDim, marginTop: 14 }}>
+          Quest points and XP are tracked from quests completed in this app.
+        </div>
+      </>
+    ));
 
   // ── World map (fullscreen) ──
   const worldMapOverlay = worldMap && (
@@ -1198,14 +1401,22 @@ export default function QuestHelper() {
             )}
           </div>
 
-          <button
-            onClick={() =>
-              setWorldMap({ x: 3222, y: 3218, title: "Gielinor", marker: false })
-            }
-            style={{ ...ghostBtn, marginTop: 12, color: C.gold, borderColor: C.border }}
-          >
-            🗺️ Open world map
-          </button>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              onClick={() =>
+                setWorldMap({ x: 3222, y: 3218, title: "Gielinor", marker: false })
+              }
+              style={{ ...ghostBtn, flex: 1, color: C.gold, borderColor: C.border }}
+            >
+              🗺️ World map
+            </button>
+            <button
+              onClick={() => setProfileOpen(true)}
+              style={{ ...ghostBtn, flex: 1, color: C.gold, borderColor: C.border }}
+            >
+              👤 Profile
+            </button>
+          </div>
 
           {recent.length > 0 && (
             <div style={{ marginTop: 26 }}>
@@ -1322,6 +1533,7 @@ export default function QuestHelper() {
             </div>
           </div>
         </div>
+        {profileOverlay}
         {worldMapOverlay}
       </div>
     );
@@ -1369,21 +1581,9 @@ export default function QuestHelper() {
               </div>
             )}
           </div>
-          {quest && gallery.length > 0 && phase !== "done" && (
-            <button onClick={() => setGalleryOpen(true)} style={headBtn}>
-              🖼️
-            </button>
-          )}
-          {quest && phase !== "info" && phase !== "done" && (
-            <button onClick={() => setPhase("info")} style={headBtn}>
-              ℹ️
-            </button>
-          )}
-          {quest && phase === "steps" && quest.items.length > 0 && (
-            <button onClick={() => setPhase("items")} style={headBtn}>
-              🎒
-            </button>
-          )}
+          <button onClick={() => setProfileOpen(true)} style={headBtn}>
+            👤
+          </button>
         </div>
         {quest && phase === "steps" && (
           <div
@@ -1883,52 +2083,66 @@ export default function QuestHelper() {
                   />
                 ))}
 
-                {/* Toolbar: permanent dashed divider with all step actions below */}
-                {(step.links.length > 0 || step.info.length > 0) && (
-                  <>
-                    <div style={dashed} />
-                    <div
+                {/* Toolbar: permanent dashed divider with all step actions */}
+                <div style={dashed} />
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: 6,
+                    marginTop: 12,
+                  }}
+                >
+                  {step.links.map((l) => (
+                    <button
+                      key={l.page}
+                      onClick={() => lookupPage(l.page, l.label)}
+                      style={toolChip}
+                    >
+                      🔍 {l.label}
+                    </button>
+                  ))}
+                  {gallery.length > 0 && (
+                    <button
+                      onClick={() => setGalleryOpen(true)}
+                      style={toolIcon}
+                      title="Maps & images"
+                    >
+                      🖼️
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setPhase("info")}
+                    style={toolIcon}
+                    title="Quest info"
+                  >
+                    ℹ️
+                  </button>
+                  {quest.items.length > 0 && (
+                    <button
+                      onClick={() => setPhase("items")}
+                      style={toolIcon}
+                      title="Required items"
+                    >
+                      🎒
+                    </button>
+                  )}
+                  {step.info.length > 0 && (
+                    <button
+                      onClick={() => setStepInfoOpen(!stepInfoOpen)}
                       style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        alignItems: "center",
-                        gap: 6,
-                        marginTop: 12,
+                        ...toolIcon,
+                        fontFamily: "Georgia, serif",
+                        fontWeight: 700,
+                        background: stepInfoOpen ? C.ink : "rgba(58,46,25,.08)",
+                        color: stepInfoOpen ? C.parch : C.ink,
                       }}
                     >
-                      {step.links.map((l) => (
-                        <button
-                          key={l.page}
-                          onClick={() => lookupPage(l.page, l.label)}
-                          style={toolChip}
-                        >
-                          🔍 {l.label}
-                        </button>
-                      ))}
-                      {step.info.length > 0 && (
-                        <button
-                          onClick={() => setStepInfoOpen(!stepInfoOpen)}
-                          style={{
-                            ...toolChip,
-                            width: 32,
-                            height: 32,
-                            padding: 0,
-                            borderRadius: "50%",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontFamily: "Georgia, serif",
-                            fontSize: 15,
-                            background: stepInfoOpen ? C.ink : "rgba(58,46,25,.08)",
-                            color: stepInfoOpen ? C.parch : C.ink,
-                          }}
-                        >
-                          i
-                        </button>
-                      )}
-                    </div>
-                  </>
-                )}
+                      i
+                    </button>
+                  )}
+                </div>
 
                 {stepInfoOpen && step.info.length > 0 && (
                   <>
@@ -1995,6 +2209,20 @@ export default function QuestHelper() {
             <div style={{ color: C.textDim, marginTop: 6 }}>
               {quest.name} has been completed and removed from your list.
             </div>
+            {lastReward && (lastReward.qp > 0 || Object.keys(lastReward.xp).length > 0) && (
+              <div style={{ ...card, padding: "12px 18px", marginTop: 16 }}>
+                {lastReward.qp > 0 && (
+                  <div style={{ color: C.gold, fontWeight: 700, fontSize: 15 }}>
+                    ⭐ +{lastReward.qp} Quest point{lastReward.qp > 1 ? "s" : ""}
+                  </div>
+                )}
+                {Object.entries(lastReward.xp).map(([sk, amt]) => (
+                  <div key={sk} style={{ fontSize: 14, color: C.text, marginTop: 3 }}>
+                    📈 +{fmtNum(amt)} {capitalize(sk)} xp
+                  </div>
+                ))}
+              </div>
+            )}
             <button
               onClick={() => setView("home")}
               style={{ ...bigBtn, marginTop: 26, maxWidth: 300 }}
@@ -2017,6 +2245,11 @@ export default function QuestHelper() {
             {lookup.error && !lookup.loading && (
               <div style={{ color: C.textDim, fontSize: 14, marginBottom: 12 }}>
                 {lookup.error}
+              </div>
+            )}
+            {!lookup.loading && !lookup.coords && (
+              <div style={{ color: C.textDim, fontSize: 13, marginBottom: 10 }}>
+                📍 Coordinates couldn't be found for this page.
               </div>
             )}
             {!lookup.loading && (
@@ -2096,6 +2329,7 @@ export default function QuestHelper() {
           </>
         ))}
 
+      {profileOverlay}
       {worldMapOverlay}
     </div>
   );
