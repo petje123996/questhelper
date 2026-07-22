@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest-info & vereisten → items afvinken → stappen-wizard.
-// Vereiste quests zijn klikbaar; voltooide worden doorgestreept.
+// Hiscores: skill-check per vereiste + combat-check per monster.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -70,6 +70,23 @@ function cleanText(s: string): string {
 function normalizeSkill(s: string): string {
   const t = s.toLowerCase().trim();
   return t === "runecrafting" ? "runecraft" : t;
+}
+
+// Officiële OSRS combat level formule
+function calcCombat(skills: Record<string, number>): number {
+  const g = (n: string) => skills[n] ?? 1;
+  const base = 0.25 * (g("defence") + Math.max(g("hitpoints"), 10) + Math.floor(g("prayer") / 2));
+  const melee = 0.325 * (g("attack") + g("strength"));
+  const range = 0.325 * Math.floor((3 * g("ranged")) / 2);
+  const mage = 0.325 * Math.floor((3 * g("magic")) / 2);
+  return Math.floor(base + Math.max(melee, range, mage));
+}
+
+// Hoogste "(level X)" uit een monster-omschrijving
+function enemyLevel(s: string): number | null {
+  const matches = Array.from(s.matchAll(/levels?\s*(\d+)/gi));
+  if (!matches.length) return null;
+  return Math.max(...matches.map((m) => parseInt(m[1], 10)));
 }
 
 // Splitst "Bucket of milk (can be bought at...)" in naam + extra info
@@ -395,6 +412,8 @@ export default function QuestHelper() {
     if (!player) return null;
     return (player.skills[normalizeSkill(req.skill)] ?? 1) >= req.level;
   };
+
+  const combatLevel = player ? calcCombat(player.skills) : null;
 
   const markCompleted = useCallback((name: string) => {
     setCompleted((prev) => {
@@ -830,6 +849,7 @@ export default function QuestHelper() {
             {player && !statsError && (
               <div style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
                 ✓ Stats geladen voor {player.name}
+                {combatLevel !== null ? ` · Combat level ${combatLevel}` : ""}
               </div>
             )}
             {statsError && (
@@ -1193,14 +1213,72 @@ export default function QuestHelper() {
 
               {quest.meta.enemies.length > 0 && (
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ ...goldTitle, fontSize: 14, fontWeight: 700, marginBottom: 6 }}>
-                    ⚔️ Te verslaan
-                  </div>
-                  {quest.meta.enemies.map((e, i) => (
-                    <div key={i} style={{ fontSize: 14, color: C.text, padding: "2px 0" }}>
-                      • {e}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 6,
+                    }}
+                  >
+                    <div style={{ ...goldTitle, fontSize: 14, fontWeight: 700 }}>
+                      ⚔️ Te verslaan
                     </div>
-                  ))}
+                    {combatLevel !== null && (
+                      <span style={{ fontSize: 12, color: C.textDim }}>
+                        Jouw combat: <b style={{ color: C.gold }}>{combatLevel}</b>
+                      </span>
+                    )}
+                  </div>
+                  {quest.meta.enemies.map((e, i) => {
+                    const lvl = enemyLevel(e);
+                    const ok =
+                      combatLevel !== null && lvl !== null
+                        ? combatLevel >= lvl
+                        : null;
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          ...card,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          padding: "10px 14px",
+                          marginBottom: 6,
+                          borderColor:
+                            ok === true
+                              ? C.green
+                              : ok === false
+                              ? C.red
+                              : C.borderSoft,
+                        }}
+                      >
+                        <span style={{ fontSize: 15 }}>
+                          {ok === true ? "✅" : ok === false ? "⚠️" : "⚔️"}
+                        </span>
+                        <span
+                          style={{
+                            flex: 1,
+                            fontSize: 14,
+                            color: ok === true ? C.green : ok === false ? C.parch : C.text,
+                          }}
+                        >
+                          {e}
+                        </span>
+                        {ok === false && (
+                          <span style={{ fontSize: 12, color: C.red, fontWeight: 700 }}>
+                            hoger dan jij
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {combatLevel !== null && (
+                    <div style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
+                      Indicatie op basis van combat level — gear en tactiek tellen ook mee.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
