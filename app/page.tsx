@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest-info & vereisten → items afvinken → stappen-wizard.
-// RSN-koppeling checkt skill-vereisten via de officiële hiscores.
+// Vereiste quests zijn klikbaar; voltooide worden doorgestreept.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -263,6 +263,7 @@ export default function QuestHelper() {
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [allQuests, setAllQuests] = useState<string[]>(POPULAR);
+  const [completed, setCompleted] = useState<Set<string>>(new Set());
   const [quest, setQuest] = useState<Quest | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
@@ -285,6 +286,9 @@ export default function QuestHelper() {
       setRecent(active);
       if (active.length !== r.length) saveStored("qh-recent", active);
     }
+
+    const comp = loadStored("qh-completed");
+    if (Array.isArray(comp)) setCompleted(new Set(comp));
 
     const savedPlayer = loadStored("qh-rsn");
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
@@ -390,6 +394,39 @@ export default function QuestHelper() {
   const checkReq = (req: SkillReq): boolean | null => {
     if (!player) return null;
     return (player.skills[normalizeSkill(req.skill)] ?? 1) >= req.level;
+  };
+
+  const markCompleted = useCallback((name: string) => {
+    setCompleted((prev) => {
+      const next = new Set(prev);
+      next.add(name);
+      saveStored("qh-completed", Array.from(next));
+      return next;
+    });
+  }, []);
+
+  const toggleCompleted = (name: string) => {
+    setCompleted((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      saveStored("qh-completed", Array.from(next));
+      return next;
+    });
+  };
+
+  // Zoekt of een vereiste-regel een questnaam is
+  const matchQuest = (req: string): string | null => {
+    const r = req.toLowerCase();
+    const exact = allQuests.find((n) => n.toLowerCase() === r);
+    if (exact) return exact;
+    const partial = allQuests.find(
+      (n) => n.length >= 8 && r.includes(n.toLowerCase())
+    );
+    return partial || null;
   };
 
   const updateRecent = useCallback(
@@ -519,6 +556,7 @@ export default function QuestHelper() {
     setStepInfoOpen(false);
     if (stepIdx >= quest.steps.length - 1) {
       setPhase("done");
+      markCompleted(quest.name);
       removeFromRecent(quest.name);
       removeStored(storageKey(quest.name));
       return;
@@ -813,15 +851,26 @@ export default function QuestHelper() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {allQuests
                 .filter((n) => !recentNames.has(n))
-                .map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => openQuest(n)}
-                    style={{ ...chip, padding: "9px 13px", cursor: "pointer" }}
-                  >
-                    {n}
-                  </button>
-                ))}
+                .map((n) => {
+                  const isDone = completed.has(n);
+                  return (
+                    <button
+                      key={n}
+                      onClick={() => openQuest(n)}
+                      style={{
+                        ...chip,
+                        padding: "9px 13px",
+                        cursor: "pointer",
+                        textDecoration: isDone ? "line-through" : "none",
+                        color: isDone ? C.textDim : C.parch,
+                        borderColor: isDone ? C.green : C.border,
+                      }}
+                    >
+                      {isDone ? "✓ " : ""}
+                      {n}
+                    </button>
+                  );
+                })}
             </div>
           </div>
         </div>
@@ -1059,20 +1108,88 @@ export default function QuestHelper() {
                 </div>
               )}
 
-              {quest.meta.otherReqs.map((t, i) => (
-                <div
-                  key={i}
-                  style={{
-                    ...card,
-                    padding: "10px 14px",
-                    marginBottom: 6,
-                    fontSize: 14,
-                    color: C.text,
-                  }}
-                >
-                  📜 {t}
+              {quest.meta.otherReqs.map((t, i) => {
+                const qName = matchQuest(t);
+                if (!qName) {
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        ...card,
+                        padding: "10px 14px",
+                        marginBottom: 6,
+                        fontSize: 14,
+                        color: C.text,
+                      }}
+                    >
+                      📜 {t}
+                    </div>
+                  );
+                }
+                const isDone = completed.has(qName);
+                return (
+                  <div
+                    key={i}
+                    onClick={() => {
+                      if (!isDone) openQuest(qName);
+                    }}
+                    style={{
+                      ...card,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "10px 14px",
+                      marginBottom: 6,
+                      cursor: isDone ? "default" : "pointer",
+                      borderColor: isDone ? C.green : C.gold,
+                    }}
+                  >
+                    <span style={{ fontSize: 15 }}>{isDone ? "✅" : "📜"}</span>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 15,
+                        color: isDone ? C.textDim : C.gold,
+                        textDecoration: isDone ? "line-through" : "underline",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {qName}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCompleted(qName);
+                      }}
+                      style={{
+                        flexShrink: 0,
+                        width: 26,
+                        height: 26,
+                        borderRadius: 7,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 14,
+                        background: isDone ? C.green : "transparent",
+                        color: isDone ? C.bg : "transparent",
+                        border: isDone
+                          ? `1px solid ${C.green}`
+                          : `2px solid ${C.border}`,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ✓
+                    </button>
+                  </div>
+                );
+              })}
+
+              {quest.meta.otherReqs.some((t) => matchQuest(t) && !completed.has(matchQuest(t) as string)) && (
+                <div style={{ fontSize: 12, color: C.textDim, margin: "4px 0 10px" }}>
+                  Tik op een quest om hem te openen, of op het vakje als je hem al gedaan hebt.
                 </div>
-              ))}
+              )}
 
               {quest.meta.enemies.length > 0 && (
                 <div style={{ marginTop: 12 }}>
