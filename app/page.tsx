@@ -498,6 +498,7 @@ export default function QuestHelper() {
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
   const [openInfo, setOpenInfo] = useState<number | null>(null);
   const [stepInfoOpen, setStepInfoOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
   const [gallery, setGallery] = useState<GalleryImg[]>([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [lookup, setLookup] = useState<Lookup | null>(null);
@@ -983,6 +984,15 @@ export default function QuestHelper() {
     setStepIdx(n);
     persist(quest.name, "steps", n, itemsChecked);
     updateRecent(quest.name, n, quest.steps.length);
+  };
+
+  const jumpToStep = (i: number) => {
+    if (!quest) return;
+    setStepIdx(i);
+    setStepInfoOpen(false);
+    setStepsOpen(false);
+    persist(quest.name, "steps", i, itemsChecked);
+    updateRecent(quest.name, i, quest.steps.length);
   };
 
   const prevStep = () => {
@@ -2256,6 +2266,13 @@ export default function QuestHelper() {
                       🔍 {l.label}
                     </button>
                   ))}
+                  <button
+                    onClick={() => setStepsOpen(true)}
+                    style={toolIcon}
+                    title="All steps"
+                  >
+                    📋
+                  </button>
                   {gallery.length > 0 && (
                     <button
                       onClick={() => setGalleryOpen(true)}
@@ -2454,6 +2471,64 @@ export default function QuestHelper() {
             >
               Open on wiki ↗
             </a>
+          </>
+        ))}
+
+      {/* Overlay: step overview with jump list */}
+      {stepsOpen &&
+        quest &&
+        overlay(`📋 All steps (${total})`, () => setStepsOpen(false), (
+          <>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
+              Tap a step to jump there — handy if you're further along in game.
+            </div>
+            {quest.steps.map((st, i) => {
+              const isCur = i === stepIdx;
+              const isPast = i < stepIdx;
+              return (
+                <button
+                  key={i}
+                  onClick={() => jumpToStep(i)}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "10px 12px",
+                    marginBottom: 6,
+                    background: isCur ? C.panelSoft : C.panel,
+                    border: `1px solid ${isCur ? C.gold : C.borderSoft}`,
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    color: isPast ? C.textDim : C.parch,
+                  }}
+                >
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      minWidth: 26,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      color: isCur ? C.gold : isPast ? C.green : C.textDim,
+                    }}
+                  >
+                    {isPast ? "✓" : i + 1}
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 13,
+                      lineHeight: 1.4,
+                      textDecoration: isPast ? "line-through" : "none",
+                    }}
+                  >
+                    {st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text}
+                  </span>
+                </button>
+              );
+            })}
           </>
         ))}
 
