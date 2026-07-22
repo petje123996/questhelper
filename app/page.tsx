@@ -486,6 +486,7 @@ export default function QuestHelper() {
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [allQuests, setAllQuests] = useState<string[]>(POPULAR);
+  const [optimal, setOptimal] = useState<string[]>([]);
   const [f2p, setF2p] = useState<Set<string>>(new Set(F2P_FALLBACK));
   const [miniSet, setMiniSet] = useState<Set<string>>(new Set(MINI_FALLBACK));
   const [completed, setCompleted] = useState<Set<string>>(new Set());
@@ -533,6 +534,54 @@ export default function QuestHelper() {
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
       setPlayer(savedPlayer);
       setRsn(savedPlayer.name);
+    }
+
+    // Optimal Quest Guide order from the wiki (refresh at most weekly)
+    const cachedOpt = loadStored("qh-optimal");
+    const optFresh =
+      cachedOpt &&
+      Array.isArray(cachedOpt.names) &&
+      cachedOpt.names.length > 0 &&
+      Date.now() - (cachedOpt.ts || 0) < 7 * 24 * 60 * 60 * 1000;
+    if (cachedOpt && Array.isArray(cachedOpt.names) && cachedOpt.names.length > 0) {
+      setOptimal(cachedOpt.names);
+    }
+    if (!optFresh) {
+      (async () => {
+        try {
+          const data = await fetchJson(
+            `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
+              "Optimal quest guide"
+            )}`
+          );
+          if (data.error) return;
+          const doc = new DOMParser().parseFromString(
+            data.parse.text["*"],
+            "text/html"
+          );
+          const names: string[] = [];
+          const seen = new Set<string>();
+          // Quest links inside tables/lists, in document order
+          doc.querySelectorAll("table a, ul a, ol a").forEach((a) => {
+            const href = a.getAttribute("href") || "";
+            if (!href.startsWith("/w/")) return;
+            const page = decodeURIComponent(href.slice(3))
+              .split("#")[0]
+              .replace(/_/g, " ");
+            if (!page || page.includes(":") || page.includes("/")) return;
+            const key = page.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            names.push(page);
+          });
+          if (names.length > 20) {
+            setOptimal(names);
+            saveStored("qh-optimal", { ts: Date.now(), names });
+          }
+        } catch {
+          /* no adviser, no problem */
+        }
+      })();
     }
 
     // Quest lists from the wiki, grouped like the in-game quest tab
@@ -1025,6 +1074,14 @@ export default function QuestHelper() {
   });
   const xpSorted = Object.entries(xpTotals).sort((a, b) => b[1] - a[1]);
   const completedList = Array.from(completed).sort();
+
+  // What's next: first quests from the Optimal Quest Guide not yet done
+  const questByLower = new Map(allQuests.map((n) => [n.toLowerCase(), n]));
+  const upNext = optimal
+    .map((n) => questByLower.get(n.toLowerCase()))
+    .filter((n): n is string => !!n && !completed.has(n));
+  const nextQuest = upNext.length > 0 ? upNext[0] : null;
+  const afterThat = upNext.slice(1, 4);
 
   // Quest list groups, like the in-game quest tab
   const questStatus = (name: string): "done" | "progress" | "new" =>
@@ -1548,6 +1605,43 @@ export default function QuestHelper() {
               👤 Profile
             </button>
           </div>
+
+          {nextQuest && (
+            <div
+              onClick={() => openQuest(nextQuest)}
+              style={{
+                ...card,
+                borderColor: C.gold,
+                padding: "14px 16px",
+                marginTop: 26,
+                cursor: "pointer",
+                boxShadow: "0 3px 12px rgba(0,0,0,.35)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  color: C.goldDim,
+                  fontWeight: 700,
+                  letterSpacing: 1,
+                  marginBottom: 4,
+                }}
+              >
+                🎯 WHAT'S NEXT
+              </div>
+              <div style={{ ...goldTitle, fontSize: 19, fontWeight: 700 }}>
+                {nextQuest}
+              </div>
+              {afterThat.length > 0 && (
+                <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
+                  Then: {afterThat.join(" · ")}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: C.textDim, marginTop: 6 }}>
+                Based on the wiki's Optimal Quest Guide — tap to start
+              </div>
+            </div>
+          )}
 
           {recent.length > 0 && (
             <div style={{ marginTop: 26 }}>
