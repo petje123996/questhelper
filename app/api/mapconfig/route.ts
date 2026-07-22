@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 
-// Haalt de actuele tile-versie van de wiki-wereldkaart op.
-// Die versie verandert bij game-updates, dus we lezen hem live uit.
+// Fetches the current tile version of the wiki world map.
+// It changes with game updates, so we read it live.
 
-export const revalidate = 86400; // 1x per dag verversen
+export const revalidate = 86400; // refresh once a day
 
 export async function GET() {
   try {
@@ -11,20 +11,20 @@ export async function GET() {
       "https://maps.runescape.wiki/osrs/data/dataloader.json",
       { next: { revalidate: 86400 } }
     );
-    if (!res.ok) throw new Error("dataloader niet bereikbaar");
+    if (!res.ok) throw new Error("dataloader unreachable");
 
     const text = await res.text();
-    // Versies hebben het formaat YYYY-MM-DD_1; pak de nieuwste
+    // Versions look like YYYY-MM-DD_1; pick the newest
     const versions = Array.from(text.matchAll(/\d{4}-\d{2}-\d{2}_\d+/g)).map(
       (m) => m[0]
     );
-    if (!versions.length) throw new Error("geen versie gevonden");
+    if (!versions.length) throw new Error("no version found");
     versions.sort();
 
     return NextResponse.json({ cacheVersion: versions[versions.length - 1] });
   } catch {
     return NextResponse.json(
-      { error: "Kaartconfiguratie niet beschikbaar" },
+      { error: "Map configuration unavailable" },
       { status: 502 }
     );
   }
