@@ -4,10 +4,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest-info & vereisten → items afvinken → stappen-wizard.
-// Extra: galerij uit de volledige gids + tikbare NPC/locatie-chips.
+// Wereldkaart: Leaflet + officiële wiki-tiles, NPC's als marker.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
+const TILES = "https://maps.runescape.wiki/osrs/tiles";
 
 const C = {
   bg: "#26211A",
@@ -66,13 +67,37 @@ type Quest = { name: string; steps: Step[]; items: Item[]; meta: Meta };
 type RecentItem = { name: string; done: number; total: number };
 type Player = { name: string; skills: Record<string, number> };
 type GalleryImg = { src: string; caption: string };
+type Coords = { x: number; y: number };
 type Lookup = {
   title: string;
   page: string;
   loading: boolean;
   images: string[];
+  coords: Coords | null;
   error: string | null;
 };
+type WorldMap = { x: number; y: number; title: string };
+
+// Leaflet 1x laden vanaf CDN
+let leafletPromise: Promise<any> | null = null;
+function loadLeaflet(): Promise<any> {
+  const w = window as any;
+  if (w.L) return Promise.resolve(w.L);
+  if (leafletPromise) return leafletPromise;
+  leafletPromise = new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href =
+      "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+    document.head.appendChild(css);
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+    s.onload = () => resolve((window as any).L);
+    s.onerror = () => reject(new Error("Leaflet laden mislukt"));
+    document.head.appendChild(s);
+  });
+  return leafletPromise;
+}
 
 function cleanText(s: string): string {
   return s
@@ -95,6 +120,33 @@ function resolveSrc(raw: string): string {
 
 function wikiUrl(page: string): string {
   return WIKI + "/w/" + encodeURIComponent(page.replace(/ /g, "_"));
+}
+
+// Game-coördinaten uit wiki-pagina-HTML vissen (ingebedde kaartjes)
+function extractCoords(html: string): Coords | null {
+  const valid = (x: number, y: number) =>
+    x >= 1000 && x <= 13000 && y >= 1000 && y <= 13000 ? { x, y } : null;
+  let m = html.match(/"coordinates"\s*:\s*\[\s*(\d{3,5})(?:\.\d+)?\s*,\s*(\d{3,5})/);
+  if (m) {
+    const r = valid(+m[1], +m[2]);
+    if (r) return r;
+  }
+  m = html.match(/data-x="(\d{3,5})"[^>]*data-y="(\d{3,5})"/);
+  if (m) {
+    const r = valid(+m[1], +m[2]);
+    if (r) return r;
+  }
+  m = html.match(/data-lon="(\d{3,5}(?:\.\d+)?)"[^>]*data-lat="(\d{3,5}(?:\.\d+)?)"/);
+  if (m) {
+    const r = valid(Math.round(+m[1]), Math.round(+m[2]));
+    if (r) return r;
+  }
+  m = html.match(/data-lat="(\d{3,5}(?:\.\d+)?)"[^>]*data-lon="(\d{3,5}(?:\.\d+)?)"/);
+  if (m) {
+    const r = valid(Math.round(+m[2]), Math.round(+m[1]));
+    if (r) return r;
+  }
+  return null;
 }
 
 // Officiële OSRS combat level formule
@@ -189,14 +241,10 @@ function parseGallery(html: string): GalleryImg[] {
 }
 
 // Splitst een stap in tekst + info + afbeeldingen + links
-function makeStep(
-  li: Element,
-  section: string
-): Step | null {
+function makeStep(li: Element, section: string): Step | null {
   const clone = li.cloneNode(true) as Element;
   clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
 
-  // Afbeeldingen in de stap zelf; kleine icoontjes overslaan
   const images: string[] = [];
   clone.querySelectorAll("img").forEach((img) => {
     if (images.length >= 2) return;
@@ -206,7 +254,6 @@ function makeStep(
     if (src) images.push(src);
   });
 
-  // Gelinkte NPC's, locaties en items in deze stap
   const links: LinkRef[] = [];
   clone.querySelectorAll("a").forEach((a) => {
     if (links.length >= 4) return;
@@ -353,6 +400,8 @@ export default function QuestHelper() {
   const [gallery, setGallery] = useState<GalleryImg[]>([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [lookup, setLookup] = useState<Lookup | null>(null);
+  const [worldMap, setWorldMap] = useState<WorldMap | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rsn, setRsn] = useState("");
@@ -360,6 +409,7 @@ export default function QuestHelper() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
+  const mapDivRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
@@ -420,6 +470,75 @@ export default function QuestHelper() {
       }
     })();
   }, []);
+
+  // Wereldkaart initialiseren wanneer geopend
+  useEffect(() => {
+    if (!worldMap) return;
+    let map: any = null;
+    let cancelled = false;
+    setMapError(null);
+    (async () => {
+      try {
+        // Actuele tile-versie ophalen (1 dag gecachet)
+        let v: string | null = null;
+        const cached = loadStored("qh-mapver");
+        if (cached && cached.v && Date.now() - (cached.ts || 0) < 86400000) {
+          v = cached.v;
+        }
+        if (!v) {
+          const res = await fetch("/api/mapconfig");
+          const d = await res.json();
+          if (!res.ok || !d.cacheVersion) throw new Error();
+          v = d.cacheVersion as string;
+          saveStored("qh-mapver", { v, ts: Date.now() });
+        }
+
+        const L = await loadLeaflet();
+        if (cancelled || !mapDivRef.current) return;
+
+        map = L.map(mapDivRef.current, {
+          crs: L.CRS.Simple,
+          minZoom: -3,
+          maxZoom: 5,
+          zoomControl: true,
+          attributionControl: true,
+        });
+
+        const OsrsTiles = L.TileLayer.extend({
+          getTileUrl: function (c: any) {
+            return `${TILES}/0_${v}/${c.z}/0_${c.x}_${-(c.y + 1)}.png`;
+          },
+        });
+        new OsrsTiles("", {
+          minZoom: -3,
+          maxZoom: 5,
+          minNativeZoom: -3,
+          maxNativeZoom: 3,
+          tileSize: 256,
+          attribution:
+            'Kaart © Jagex · tiles <a href="https://weirdgloop.org/licensing" target="_blank" rel="noopener">RuneScape Wiki</a>',
+        }).addTo(map);
+
+        const pos = [worldMap.y + 0.5, worldMap.x + 0.5];
+        map.setView(pos, 2);
+        L.circleMarker(pos, {
+          radius: 9,
+          color: "#E7B84C",
+          weight: 3,
+          fillColor: "#C96A5B",
+          fillOpacity: 0.9,
+        })
+          .addTo(map)
+          .bindTooltip(worldMap.title);
+      } catch {
+        if (!cancelled) setMapError("Kaart kon niet geladen worden.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (map) map.remove();
+    };
+  }, [worldMap]);
 
   // Wiki-zoeksuggesties + lokale lijst
   useEffect(() => {
@@ -637,9 +756,9 @@ export default function QuestHelper() {
     }
   };
 
-  // Zoekt afbeeldingen (bij voorkeur locatiekaartjes) van een wiki-pagina
+  // Zoekt afbeeldingen + coördinaten van een wiki-pagina
   const lookupPage = async (page: string, label: string) => {
-    setLookup({ title: label, page, loading: true, images: [], error: null });
+    setLookup({ title: label, page, loading: true, images: [], coords: null, error: null });
     try {
       const data = await fetchJson(
         `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
@@ -647,7 +766,9 @@ export default function QuestHelper() {
         )}`
       );
       if (data.error) throw new Error("Pagina niet gevonden");
-      const doc = new DOMParser().parseFromString(data.parse.text["*"], "text/html");
+      const html: string = data.parse.text["*"];
+      const coords = extractCoords(html);
+      const doc = new DOMParser().parseFromString(html, "text/html");
       const found: { src: string; isMap: boolean }[] = [];
       const seen = new Set<string>();
       doc.querySelectorAll("img").forEach((img) => {
@@ -665,7 +786,11 @@ export default function QuestHelper() {
         page,
         loading: false,
         images,
-        error: images.length ? null : "Geen afbeeldingen gevonden op deze pagina.",
+        coords,
+        error:
+          images.length || coords
+            ? null
+            : "Geen afbeeldingen gevonden op deze pagina.",
       });
     } catch {
       setLookup((prev) =>
@@ -860,6 +985,68 @@ export default function QuestHelper() {
     </div>
   );
 
+  // ── Wereldkaart (vollscherm) ──
+  const worldMapOverlay = worldMap && (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 60,
+        background: C.bg,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "10px 14px",
+          borderBottom: `2px solid ${C.border}`,
+        }}
+      >
+        <div
+          style={{
+            ...goldTitle,
+            fontSize: 16,
+            fontWeight: 700,
+            flex: 1,
+            minWidth: 0,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          🗺️ {worldMap.title}
+        </div>
+        <button
+          onClick={() => setWorldMap(null)}
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: "50%",
+            background: C.panelSoft,
+            color: C.parch,
+            border: `1px solid ${C.border}`,
+            fontSize: 15,
+            cursor: "pointer",
+            lineHeight: 1,
+          }}
+        >
+          ✕
+        </button>
+      </div>
+      {mapError ? (
+        <div style={{ padding: 30, textAlign: "center", color: C.textDim }}>
+          {mapError}
+        </div>
+      ) : (
+        <div ref={mapDivRef} style={{ flex: 1, background: "#000" }} />
+      )}
+    </div>
+  );
+
   // ── Home ──
   if (view === "home") {
     return (
@@ -918,6 +1105,15 @@ export default function QuestHelper() {
               ))}
             </div>
           )}
+
+          <button
+            onClick={() =>
+              setWorldMap({ x: 3222, y: 3218, title: "Gielinor · Lumbridge" })
+            }
+            style={{ ...ghostBtn, marginTop: 10, color: C.gold, borderColor: C.border }}
+          >
+            🗺️ Open wereldkaart
+          </button>
 
           {recent.length > 0 && (
             <div style={{ marginTop: 26 }}>
@@ -1095,6 +1291,7 @@ export default function QuestHelper() {
             </div>
           </div>
         </div>
+        {worldMapOverlay}
       </div>
     );
   }
@@ -1771,6 +1968,19 @@ export default function QuestHelper() {
                 {lookup.error}
               </div>
             )}
+            {lookup.coords && !lookup.loading && (
+              <button
+                onClick={() => {
+                  const c = lookup.coords as Coords;
+                  const title = lookup.title;
+                  setLookup(null);
+                  setWorldMap({ x: c.x, y: c.y, title });
+                }}
+                style={{ ...bigBtn, marginBottom: 12 }}
+              >
+                🗺️ Toon op wereldkaart
+              </button>
+            )}
             {lookup.images.map((src) => (
               <img
                 key={src}
@@ -1830,6 +2040,8 @@ export default function QuestHelper() {
             ))}
           </>
         ))}
+
+      {worldMapOverlay}
     </div>
   );
 }
