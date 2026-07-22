@@ -492,6 +492,7 @@ export default function QuestHelper() {
   const [progress, setProgress] = useState<Progress>({});
   const [lastReward, setLastReward] = useState<QuestReward | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [quest, setQuest] = useState<Quest | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
@@ -1129,12 +1130,15 @@ export default function QuestHelper() {
         <div style={{ ...card, overflow: "hidden" }}>
           {names.map((n, i) => {
             const s = questStatus(n);
+            const isDone = s === "done";
             return (
               <button
                 key={n}
-                onClick={() => openQuest(n)}
+                onClick={() => (editMode ? toggleCompleted(n) : openQuest(n))}
                 style={{
-                  display: "block",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
                   width: "100%",
                   textAlign: "left",
                   padding: "10px 14px",
@@ -1148,7 +1152,28 @@ export default function QuestHelper() {
                   cursor: "pointer",
                 }}
               >
-                {n}
+                {editMode && (
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      width: 20,
+                      height: 20,
+                      borderRadius: 5,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 13,
+                      background: isDone ? C.qGreen : "transparent",
+                      color: isDone ? C.bg : "transparent",
+                      border: isDone
+                        ? `1px solid ${C.qGreen}`
+                        : `2px solid ${C.border}`,
+                    }}
+                  >
+                    ✓
+                  </span>
+                )}
+                <span style={{ flex: 1, minWidth: 0 }}>{n}</span>
               </button>
             );
           })}
@@ -1610,10 +1635,33 @@ export default function QuestHelper() {
               }}
             >
               <div style={{ ...goldTitle, fontSize: 15 }}>Quest List</div>
-              <div style={{ fontSize: 13, color: C.textDim }}>
-                Quest Points: <b style={{ color: C.gold }}>{totalQp}</b>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontSize: 13, color: C.textDim }}>
+                  Quest Points: <b style={{ color: C.gold }}>{totalQp}</b>
+                </div>
+                <button
+                  onClick={() => setEditMode(!editMode)}
+                  style={{
+                    padding: "6px 11px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    background: editMode ? C.gold : "transparent",
+                    color: editMode ? C.ink : C.gold,
+                    border: `1px solid ${editMode ? C.gold : C.borderSoft}`,
+                    borderRadius: 8,
+                    cursor: "pointer",
+                  }}
+                >
+                  {editMode ? "Done" : "✏️ Mark done"}
+                </button>
               </div>
             </div>
+            {editMode && (
+              <div style={{ fontSize: 12, color: C.gold, marginBottom: 8 }}>
+                Tap quests you've already completed to mark them ✓ — tap again to
+                undo. Press Done when finished.
+              </div>
+            )}
             <div
               style={{
                 display: "flex",
