@@ -2975,4 +2975,185 @@ export default function QuestHelper() {
                   </div>
                 )}
                 {Object.entries(lastReward.xp).map(([sk, amt]) => (
-                  
+                  <div key={sk} style={{ fontSize: 14, color: C.text, marginTop: 3 }}>
+                    📈 +{fmtNum(amt)} {capitalize(sk)} xp
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => setView("home")}
+              style={{ ...bigBtn, marginTop: 26, maxWidth: 300 }}
+            >
+              Back to home
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Overlay: NPC/location lookup */}
+      {lookup &&
+        overlay(`🔍 ${lookup.title}`, () => setLookup(null), (
+          <>
+            {lookup.loading && (
+              <div style={{ color: C.textDim, padding: "20px 0", textAlign: "center" }}>
+                Searching the wiki…
+              </div>
+            )}
+            {lookup.error && !lookup.loading && (
+              <div style={{ color: C.textDim, fontSize: 14, marginBottom: 12 }}>
+                {lookup.error}
+              </div>
+            )}
+            {!lookup.loading && !lookup.coords && (
+              <div style={{ color: C.textDim, fontSize: 13, marginBottom: 10 }}>
+                📍 Coordinates couldn't be found for this page.
+              </div>
+            )}
+            {!lookup.loading && (
+              <button
+                onClick={() => {
+                  const c = lookup.coords;
+                  const title = lookup.title;
+                  setLookup(null);
+                  setWorldMap(
+                    c
+                      ? {
+                          x: c.x,
+                          y: c.y,
+                          title,
+                          marker: true,
+                          plane: c.plane,
+                          mapId: c.mapId,
+                        }
+                      : { x: 3222, y: 3218, title: "Gielinor", marker: false }
+                  );
+                }}
+                style={{ ...bigBtn, marginBottom: 12 }}
+              >
+                {lookup.coords ? "🗺️ Show on world map" : "🗺️ Open world map"}
+              </button>
+            )}
+            {lookup.images.map((src) => (
+              <img
+                key={src}
+                src={src}
+                alt=""
+                style={{
+                  width: "100%",
+                  borderRadius: 10,
+                  marginBottom: 10,
+                  border: `1px solid ${C.borderSoft}`,
+                }}
+              />
+            ))}
+            <a
+              href={wikiUrl(lookup.page)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                textAlign: "center",
+                padding: "12px",
+                background: C.panelSoft,
+                color: C.gold,
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                textDecoration: "none",
+                fontWeight: 600,
+                fontSize: 14,
+              }}
+            >
+              Open on wiki ↗
+            </a>
+          </>
+        ))}
+
+      {/* Overlay: step overview with jump list */}
+      {stepsOpen &&
+        quest &&
+        overlay(`📋 All steps (${total})`, () => setStepsOpen(false), (
+          <>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
+              Tap a step to jump there — handy if you're further along in game.
+            </div>
+            {quest.steps.map((st, i) => {
+              const isCur = i === stepIdx;
+              const isPast = i < stepIdx;
+              return (
+                <button
+                  key={i}
+                  onClick={() => jumpToStep(i)}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "10px 12px",
+                    marginBottom: 6,
+                    background: isCur ? C.panelSoft : C.panel,
+                    border: `1px solid ${isCur ? C.gold : C.borderSoft}`,
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    color: isPast ? C.textDim : C.parch,
+                  }}
+                >
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      minWidth: 26,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      color: isCur ? C.gold : isPast ? C.green : C.textDim,
+                    }}
+                  >
+                    {isPast ? "✓" : i + 1}
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 13,
+                      lineHeight: 1.4,
+                      textDecoration: isPast ? "line-through" : "none",
+                    }}
+                  >
+                    {(st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text).replace(/[\u0001\u0002]/g, "")}
+                  </span>
+                </button>
+              );
+            })}
+          </>
+        ))}
+
+      {/* Overlay: gallery from the full guide */}
+      {galleryOpen &&
+        overlay("🖼️ Maps & images", () => setGalleryOpen(false), (
+          <>
+            {gallery.map((g) => (
+              <div key={g.src} style={{ marginBottom: 16 }}>
+                <img
+                  src={g.src}
+                  alt=""
+                  style={{
+                    width: "100%",
+                    borderRadius: 10,
+                    border: `1px solid ${C.borderSoft}`,
+                  }}
+                />
+                {g.caption && (
+                  <div style={{ fontSize: 13, color: C.textDim, marginTop: 4 }}>
+                    {g.caption}
+                  </div>
+                )}
+              </div>
+            ))}
+          </>
+        ))}
+
+      {profileOverlay}
+      {worldMapOverlay}
+    </div>
+  );
+}
