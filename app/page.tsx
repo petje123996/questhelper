@@ -10,6 +10,101 @@ const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
 const TILES = "https://maps.runescape.wiki/osrs/tiles";
 
+// Common teleports for route advice: destination coords + cast time
+type Teleport = {
+  name: string;
+  x: number;
+  y: number;
+  f2p: boolean;
+  cast: number;
+  note: string;
+  icon: string;
+};
+const TELEPORTS: Teleport[] = [
+  { name: "Home Teleport (Lumbridge)", x: 3222, y: 3218, f2p: true, cast: 12, note: "free · 30 min cooldown", icon: "🏠" },
+  { name: "Varrock Teleport", x: 3213, y: 3424, f2p: true, cast: 4, note: "25 Magic", icon: "✨" },
+  { name: "Lumbridge Teleport", x: 3222, y: 3218, f2p: true, cast: 4, note: "31 Magic", icon: "✨" },
+  { name: "Falador Teleport", x: 2965, y: 3379, f2p: true, cast: 4, note: "37 Magic", icon: "✨" },
+  { name: "Camelot Teleport", x: 2757, y: 3477, f2p: false, cast: 4, note: "45 Magic", icon: "✨" },
+  { name: "Ardougne Teleport", x: 2661, y: 3300, f2p: false, cast: 4, note: "51 Magic", icon: "✨" },
+  { name: "Watchtower (Yanille)", x: 2544, y: 3095, f2p: false, cast: 4, note: "58 Magic", icon: "✨" },
+  { name: "Trollheim Teleport", x: 2890, y: 3678, f2p: false, cast: 4, note: "61 Magic", icon: "✨" },
+  { name: "Kourend Castle Teleport", x: 1643, y: 3673, f2p: false, cast: 4, note: "69 Magic", icon: "✨" },
+  { name: "Civitas illa Fortis Tele.", x: 1681, y: 3133, f2p: false, cast: 4, note: "54 Magic", icon: "✨" },
+  { name: "Glory: Edgeville", x: 3087, y: 3496, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
+  { name: "Glory: Al Kharid", x: 3293, y: 3163, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
+  { name: "Glory: Draynor", x: 3105, y: 3251, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
+  { name: "Glory: Karamja", x: 2918, y: 3176, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
+  { name: "Dueling: Ferox Enclave", x: 3150, y: 3635, f2p: false, cast: 3, note: "Ring of dueling", icon: "💍" },
+  { name: "Dueling: Castle Wars", x: 2440, y: 3089, f2p: false, cast: 3, note: "Ring of dueling", icon: "💍" },
+  { name: "Games: Burthorpe", x: 2898, y: 3546, f2p: false, cast: 3, note: "Games necklace", icon: "📿" },
+  { name: "Games: Barbarian Outpost", x: 2519, y: 3571, f2p: false, cast: 3, note: "Games necklace", icon: "📿" },
+];
+
+// Approximate F2P areas as [x1, y1, x2, y2] rectangles (members areas get dimmed)
+const F2P_RECTS: [number, number, number, number][] = [
+  [2920, 3000, 3400, 3560], // mainland: Falador–Varrock–Lumbridge–Al Kharid
+  [2941, 3560, 3392, 3968], // F2P Wilderness
+  [2872, 3130, 2919, 3202], // Musa Point (Karamja)
+  [2805, 3220, 2875, 3320], // Crandor
+  [2506, 2940, 2615, 3065], // Corsair Cove
+];
+
+type RouteOption = {
+  icon: string;
+  name: string;
+  sec: number;
+  detail: string;
+  f2p: boolean;
+};
+
+function chebyshev(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.max(
+    Math.abs(Math.round(a.x) - Math.round(b.x)),
+    Math.abs(Math.round(a.y) - Math.round(b.y))
+  );
+}
+
+function runSecs(tiles: number): number {
+  return Math.ceil(tiles / 2) * 0.6;
+}
+
+function fmtSec(s: number): string {
+  const r = Math.round(s);
+  if (r < 90) return `${r}s`;
+  return `${Math.floor(r / 60)}m ${r % 60}s`;
+}
+
+// Best travel options from a to b, sorted by estimated time
+function buildRouteOptions(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  f2pOnly: boolean
+): RouteOption[] {
+  const direct = chebyshev(a, b);
+  const opts: RouteOption[] = [
+    {
+      icon: "🏃",
+      name: "Run from your position",
+      sec: runSecs(direct),
+      detail: `${direct} tiles`,
+      f2p: true,
+    },
+  ];
+  TELEPORTS.filter((t) => !f2pOnly || t.f2p).forEach((t) => {
+    const d = chebyshev(t, b);
+    opts.push({
+      icon: t.icon,
+      name: t.name,
+      sec: t.cast + runSecs(d),
+      detail: `${t.note} → run ${d} tiles`,
+      f2p: t.f2p,
+    });
+  });
+  opts.sort((x, y) => x.sec - y.sec);
+  return opts.slice(0, 5);
+}
+
 const C = {
   bg: "#26211A",
   panel: "#332C22",
@@ -563,7 +658,15 @@ export default function QuestHelper() {
   });
   const [floor, setFloor] = useState(0);
   const [routeMode, setRouteMode] = useState(false);
-  const [routeInfo, setRouteInfo] = useState<string | null>(null);
+  const [routeResult, setRouteResult] = useState<{
+    a: { x: number; y: number };
+    b: { x: number; y: number };
+    tiles: number;
+  } | null>(null);
+  const [routeModalOpen, setRouteModalOpen] = useState(false);
+  const [f2pMode, setF2pMode] = useState(false);
+  const f2pModeRef = useRef(false);
+  const f2pLayerRef = useRef<any>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
@@ -580,6 +683,12 @@ export default function QuestHelper() {
 
     const prog = loadStored("qh-progress");
     if (prog && typeof prog === "object") setProgress(prog);
+
+    const f2p = loadStored("qh-f2p");
+    if (f2p === true) {
+      setF2pMode(true);
+      f2pModeRef.current = true;
+    }
 
     const savedPlayer = loadStored("qh-rsn");
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
@@ -702,7 +811,8 @@ export default function QuestHelper() {
     let map: any = null;
     let cancelled = false;
     setMapError(null);
-    setRouteInfo(null);
+    setRouteResult(null);
+    setRouteModalOpen(false);
     setRouteMode(false);
     routeModeRef.current = false;
     routeRef.current = { pts: [], layers: [] };
@@ -777,7 +887,8 @@ export default function QuestHelper() {
             r.layers.forEach((ly: any) => map.removeLayer(ly));
             r.pts = [];
             r.layers = [];
-            setRouteInfo(null);
+            setRouteResult(null);
+            setRouteModalOpen(false);
           }
           r.pts.push(pt);
           const mk = L.circleMarker([pt.y, pt.x], {
@@ -799,17 +910,13 @@ export default function QuestHelper() {
             ).addTo(map);
             r.layers.push(line);
             // OSRS movement allows diagonals → Chebyshev distance
-            const tiles = Math.max(
-              Math.abs(Math.round(b.x) - Math.round(a.x)),
-              Math.abs(Math.round(b.y) - Math.round(a.y))
-            );
-            const runSec = Math.ceil(tiles / 2) * 0.6;
-            const walkSec = tiles * 0.6;
-            setRouteInfo(
-              `≈ ${tiles} tiles · run ~${Math.round(runSec)}s · walk ~${Math.round(walkSec)}s (straight line)`
-            );
+            setRouteResult({ a, b, tiles: chebyshev(a, b) });
+            setRouteModalOpen(true);
           }
         });
+
+        // Dim members areas when F2P mode is on
+        if (f2pModeRef.current) addF2pOverlay(map, L);
       } catch {
         if (!cancelled) setMapError("The map couldn't be loaded.");
       }
@@ -818,10 +925,49 @@ export default function QuestHelper() {
       cancelled = true;
       mapRef.current = null;
       layerRef.current = null;
+      f2pLayerRef.current = null;
       routeRef.current = { pts: [], layers: [] };
       if (map) map.remove();
     };
   }, [worldMap]);
+
+  // Dark polygon over the whole world with F2P areas cut out as holes
+  const addF2pOverlay = (map: any, L: any) => {
+    if (f2pLayerRef.current) return;
+    const outer = [
+      [0, 0],
+      [0, 12800],
+      [12800, 12800],
+      [12800, 0],
+    ];
+    const holes = F2P_RECTS.map(([x1, y1, x2, y2]) => [
+      [y1, x1],
+      [y1, x2],
+      [y2, x2],
+      [y2, x1],
+    ]);
+    f2pLayerRef.current = L.polygon([outer, ...holes], {
+      stroke: false,
+      fillColor: "#000",
+      fillOpacity: 0.55,
+      interactive: false,
+    }).addTo(map);
+  };
+
+  const toggleF2pMode = () => {
+    const next = !f2pModeRef.current;
+    f2pModeRef.current = next;
+    setF2pMode(next);
+    saveStored("qh-f2p", next);
+    const L = (window as any).L;
+    if (!mapRef.current || !L) return;
+    if (next) {
+      addF2pOverlay(mapRef.current, L);
+    } else if (f2pLayerRef.current) {
+      mapRef.current.removeLayer(f2pLayerRef.current);
+      f2pLayerRef.current = null;
+    }
+  };
 
   const setMapFloor = (p: number) => {
     planeRef.current = p;
@@ -838,7 +984,8 @@ export default function QuestHelper() {
         mapRef.current.removeLayer(ly)
       );
       routeRef.current = { pts: [], layers: [] };
-      setRouteInfo(null);
+      setRouteResult(null);
+      setRouteModalOpen(false);
     }
   };
 
@@ -1611,6 +1758,25 @@ export default function QuestHelper() {
           </button>
         ))}
         <button
+          onClick={toggleF2pMode}
+          style={{
+            height: 30,
+            padding: "0 9px",
+            borderRadius: 8,
+            background: f2pMode ? C.gold : "transparent",
+            color: f2pMode ? C.ink : C.textDim,
+            border: `1px solid ${f2pMode ? C.gold : C.borderSoft}`,
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+            lineHeight: 1,
+            flexShrink: 0,
+          }}
+          title="Highlight free-to-play area"
+        >
+          F2P
+        </button>
+        <button
           onClick={() => setWorldMap(null)}
           style={{
             width: 34,
@@ -1628,18 +1794,17 @@ export default function QuestHelper() {
           ✕
         </button>
       </div>
-      {(routeMode || routeInfo) && (
+      {routeMode && !routeModalOpen && (
         <div
           style={{
             padding: "8px 14px",
             fontSize: 13,
-            color: routeInfo ? C.gold : C.textDim,
+            color: C.textDim,
             borderBottom: `1px solid ${C.borderSoft}`,
             background: C.panel,
           }}
         >
-          {routeInfo ||
-            "📏 Tap your start point, then your destination."}
+          📏 Tap your start point, then your destination.
         </div>
       )}
       {mapError ? (
@@ -1648,6 +1813,152 @@ export default function QuestHelper() {
         </div>
       ) : (
         <div ref={mapDivRef} style={{ flex: 1, background: "#000" }} />
+      )}
+
+      {/* Route advice modal */}
+      {routeResult && routeModalOpen && (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 1200,
+            maxHeight: "62%",
+            overflowY: "auto",
+            background: C.bg,
+            borderTop: `2px solid ${C.gold}`,
+            borderRadius: "16px 16px 0 0",
+            padding: "12px 14px 20px",
+            boxSizing: "border-box",
+            boxShadow: "0 -6px 24px rgba(0,0,0,.5)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ ...goldTitle, fontSize: 16, fontWeight: 700, flex: 1 }}>
+              📏 {routeResult.tiles} tiles
+            </div>
+            <button
+              onClick={toggleF2pMode}
+              style={{
+                height: 28,
+                padding: "0 9px",
+                borderRadius: 8,
+                background: f2pMode ? C.gold : "transparent",
+                color: f2pMode ? C.ink : C.textDim,
+                border: `1px solid ${f2pMode ? C.gold : C.borderSoft}`,
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+                lineHeight: 1,
+              }}
+            >
+              F2P only
+            </button>
+            <button
+              onClick={() => setRouteModalOpen(false)}
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: "50%",
+                background: C.panelSoft,
+                color: C.parch,
+                border: `1px solid ${C.border}`,
+                fontSize: 13,
+                cursor: "pointer",
+                lineHeight: 1,
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
+            🚶 Walk ~{fmtSec(routeResult.tiles * 0.6)} · 🏃 Run ~
+            {fmtSec(runSecs(routeResult.tiles))}
+          </div>
+
+          {buildRouteOptions(routeResult.a, routeResult.b, f2pMode).map(
+            (opt, i) => (
+              <div
+                key={opt.name}
+                style={{
+                  ...card,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "9px 12px",
+                  marginBottom: 6,
+                  borderColor: i === 0 ? C.gold : C.borderSoft,
+                }}
+              >
+                <span style={{ fontSize: 17, flexShrink: 0 }}>{opt.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: i === 0 ? C.gold : C.parch,
+                    }}
+                  >
+                    {opt.name}
+                    {!opt.f2p && !f2pMode && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: C.textDim,
+                          marginLeft: 6,
+                          fontWeight: 400,
+                        }}
+                      >
+                        members
+                      </span>
+                    )}
+                    {i === 0 && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: C.ink,
+                          background: C.gold,
+                          borderRadius: 5,
+                          padding: "1px 5px",
+                          marginLeft: 6,
+                          fontWeight: 700,
+                        }}
+                      >
+                        BEST
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.textDim }}>
+                    {opt.detail}
+                  </div>
+                </div>
+                <span
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: i === 0 ? C.gold : C.text,
+                  }}
+                >
+                  ~{fmtSec(opt.sec)}
+                </span>
+              </div>
+            )
+          )}
+
+          <div style={{ fontSize: 11, color: C.textDim, marginTop: 8 }}>
+            Straight-line estimates — walls, doors and stairs not included.
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2664,185 +2975,4 @@ export default function QuestHelper() {
                   </div>
                 )}
                 {Object.entries(lastReward.xp).map(([sk, amt]) => (
-                  <div key={sk} style={{ fontSize: 14, color: C.text, marginTop: 3 }}>
-                    📈 +{fmtNum(amt)} {capitalize(sk)} xp
-                  </div>
-                ))}
-              </div>
-            )}
-            <button
-              onClick={() => setView("home")}
-              style={{ ...bigBtn, marginTop: 26, maxWidth: 300 }}
-            >
-              Back to home
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Overlay: NPC/location lookup */}
-      {lookup &&
-        overlay(`🔍 ${lookup.title}`, () => setLookup(null), (
-          <>
-            {lookup.loading && (
-              <div style={{ color: C.textDim, padding: "20px 0", textAlign: "center" }}>
-                Searching the wiki…
-              </div>
-            )}
-            {lookup.error && !lookup.loading && (
-              <div style={{ color: C.textDim, fontSize: 14, marginBottom: 12 }}>
-                {lookup.error}
-              </div>
-            )}
-            {!lookup.loading && !lookup.coords && (
-              <div style={{ color: C.textDim, fontSize: 13, marginBottom: 10 }}>
-                📍 Coordinates couldn't be found for this page.
-              </div>
-            )}
-            {!lookup.loading && (
-              <button
-                onClick={() => {
-                  const c = lookup.coords;
-                  const title = lookup.title;
-                  setLookup(null);
-                  setWorldMap(
-                    c
-                      ? {
-                          x: c.x,
-                          y: c.y,
-                          title,
-                          marker: true,
-                          plane: c.plane,
-                          mapId: c.mapId,
-                        }
-                      : { x: 3222, y: 3218, title: "Gielinor", marker: false }
-                  );
-                }}
-                style={{ ...bigBtn, marginBottom: 12 }}
-              >
-                {lookup.coords ? "🗺️ Show on world map" : "🗺️ Open world map"}
-              </button>
-            )}
-            {lookup.images.map((src) => (
-              <img
-                key={src}
-                src={src}
-                alt=""
-                style={{
-                  width: "100%",
-                  borderRadius: 10,
-                  marginBottom: 10,
-                  border: `1px solid ${C.borderSoft}`,
-                }}
-              />
-            ))}
-            <a
-              href={wikiUrl(lookup.page)}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "block",
-                textAlign: "center",
-                padding: "12px",
-                background: C.panelSoft,
-                color: C.gold,
-                border: `1px solid ${C.border}`,
-                borderRadius: 10,
-                textDecoration: "none",
-                fontWeight: 600,
-                fontSize: 14,
-              }}
-            >
-              Open on wiki ↗
-            </a>
-          </>
-        ))}
-
-      {/* Overlay: step overview with jump list */}
-      {stepsOpen &&
-        quest &&
-        overlay(`📋 All steps (${total})`, () => setStepsOpen(false), (
-          <>
-            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
-              Tap a step to jump there — handy if you're further along in game.
-            </div>
-            {quest.steps.map((st, i) => {
-              const isCur = i === stepIdx;
-              const isPast = i < stepIdx;
-              return (
-                <button
-                  key={i}
-                  onClick={() => jumpToStep(i)}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 10,
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "10px 12px",
-                    marginBottom: 6,
-                    background: isCur ? C.panelSoft : C.panel,
-                    border: `1px solid ${isCur ? C.gold : C.borderSoft}`,
-                    borderRadius: 10,
-                    cursor: "pointer",
-                    color: isPast ? C.textDim : C.parch,
-                  }}
-                >
-                  <span
-                    style={{
-                      flexShrink: 0,
-                      minWidth: 26,
-                      fontWeight: 700,
-                      fontSize: 13,
-                      color: isCur ? C.gold : isPast ? C.green : C.textDim,
-                    }}
-                  >
-                    {isPast ? "✓" : i + 1}
-                  </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      fontSize: 13,
-                      lineHeight: 1.4,
-                      textDecoration: isPast ? "line-through" : "none",
-                    }}
-                  >
-                    {(st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text).replace(/[\u0001\u0002]/g, "")}
-                  </span>
-                </button>
-              );
-            })}
-          </>
-        ))}
-
-      {/* Overlay: gallery from the full guide */}
-      {galleryOpen &&
-        overlay("🖼️ Maps & images", () => setGalleryOpen(false), (
-          <>
-            {gallery.map((g) => (
-              <div key={g.src} style={{ marginBottom: 16 }}>
-                <img
-                  src={g.src}
-                  alt=""
-                  style={{
-                    width: "100%",
-                    borderRadius: 10,
-                    border: `1px solid ${C.borderSoft}`,
-                  }}
-                />
-                {g.caption && (
-                  <div style={{ fontSize: 13, color: C.textDim, marginTop: 4 }}>
-                    {g.caption}
-                  </div>
-                )}
-              </div>
-            ))}
-          </>
-        ))}
-
-      {profileOverlay}
-      {worldMapOverlay}
-    </div>
-  );
-}
+                  
