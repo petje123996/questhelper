@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 
-// Haalt OSRS hiscores op via de server, omdat Jagex directe
-// browser-verzoeken blokkeert (CORS).
+// Fetches OSRS hiscores server-side, because Jagex blocks
+// direct browser requests (CORS).
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const player = searchParams.get("player");
 
   if (!player || player.length > 12) {
-    return NextResponse.json({ error: "Ongeldige spelernaam" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid player name" }, { status: 400 });
   }
 
   try {
@@ -20,17 +20,14 @@ export async function GET(request: Request) {
     );
 
     if (!res.ok) {
-      return NextResponse.json(
-        { error: "Speler niet gevonden" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Player not found" }, { status: 404 });
     }
 
     const data = await res.json();
     return NextResponse.json(data);
   } catch {
     return NextResponse.json(
-      { error: "Hiscores niet bereikbaar" },
+      { error: "Hiscores unavailable" },
       { status: 502 }
     );
   }
