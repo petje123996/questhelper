@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest info & requirements → item checklist → step wizard.
-// Profile tracks quest points and XP earned from completed quests.
+// Quest list styled like the in-game quest tab (red/yellow/green).
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -24,6 +24,9 @@ const C = {
   textDim: "#9A8E74",
   green: "#7CB363",
   red: "#C96A5B",
+  qRed: "#E05C5C",
+  qYellow: "#E7C84C",
+  qGreen: "#7CC763",
 };
 
 const POPULAR = [
@@ -35,6 +38,24 @@ const POPULAR = [
   "Animal Magnetism", "Lost City", "Desert Treasure I", "Monk's Friend",
   "Plague City", "Dwarf Cannon", "The Dig Site", "Druidic Ritual",
   "Client of Kourend", "X Marks the Spot", "A Porcine of Interest",
+];
+
+// Fallback F2P list, used if the wiki category can't be fetched
+const F2P_FALLBACK = [
+  "Below Ice Mountain", "Black Knights' Fortress", "Cook's Assistant",
+  "The Corsair Curse", "Demon Slayer", "Doric's Quest", "Dragon Slayer I",
+  "Ernest the Chicken", "Goblin Diplomacy", "Imp Catcher",
+  "The Knight's Sword", "Misthalin Mystery", "Pirate's Treasure",
+  "Prince Ali Rescue", "The Restless Ghost", "Romeo & Juliet",
+  "Rune Mysteries", "Sheep Shearer", "Shield of Arrav", "Vampyre Slayer",
+  "Witch's Potion", "X Marks the Spot",
+];
+
+const MINI_FALLBACK = [
+  "Barbarian Training", "Bear Your Soul", "Daddy's Home", "Enter the Abyss",
+  "Family Pest", "Hopespear's Will", "In Search of Knowledge",
+  "Lair of Tarn Razorlor", "Skippy and the Mogres", "The Frozen Door",
+  "The General's Shadow", "The Mage Arena", "The Mage Arena II",
 ];
 
 const SKILLS = new Set([
@@ -465,6 +486,8 @@ export default function QuestHelper() {
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [allQuests, setAllQuests] = useState<string[]>(POPULAR);
+  const [f2p, setF2p] = useState<Set<string>>(new Set(F2P_FALLBACK));
+  const [miniSet, setMiniSet] = useState<Set<string>>(new Set(MINI_FALLBACK));
   const [completed, setCompleted] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<Progress>({});
   const [lastReward, setLastReward] = useState<QuestReward | null>(null);
@@ -510,20 +533,23 @@ export default function QuestHelper() {
       setRsn(savedPlayer.name);
     }
 
-    // Full quest list from the wiki (refresh at most weekly)
-    const cached = loadStored("qh-questlist");
-    if (cached && Array.isArray(cached.names) && cached.names.length > 0) {
-      setAllQuests(cached.names);
+    // Quest lists from the wiki, grouped like the in-game quest tab
+    const cached = loadStored("qh-questlist2");
+    if (cached && Array.isArray(cached.all) && cached.all.length > 0) {
+      setAllQuests(cached.all);
+      if (Array.isArray(cached.f2p)) setF2p(new Set(cached.f2p));
+      if (Array.isArray(cached.mini)) setMiniSet(new Set(cached.mini));
       if (Date.now() - (cached.ts || 0) < 7 * 24 * 60 * 60 * 1000) return;
     }
     (async () => {
-      try {
+      const fetchCategory = async (category: string): Promise<string[]> => {
         const names: string[] = [];
         let cont: string | null = null;
         for (let i = 0; i < 3; i++) {
           const url =
             `${API}?action=query&format=json&origin=*&list=categorymembers` +
-            `&cmtitle=Category%3AQuests&cmtype=page&cmlimit=500` +
+            `&cmtitle=${encodeURIComponent("Category:" + category)}` +
+            `&cmtype=page&cmlimit=500` +
             (cont ? `&cmcontinue=${encodeURIComponent(cont)}` : "");
           const data: any = await fetchJson(url);
           (data.query?.categorymembers || []).forEach((m: any) => {
@@ -532,7 +558,7 @@ export default function QuestHelper() {
               t &&
               !t.includes("/") &&
               !t.includes(":") &&
-              !/^(Quests|Quest points|Quest List)$/i.test(t)
+              !/^(Quests|Quest points|Quest List|Miniquests)$/i.test(t)
             ) {
               names.push(t);
             }
@@ -540,13 +566,30 @@ export default function QuestHelper() {
           cont = data.continue?.cmcontinue || null;
           if (!cont) break;
         }
-        if (names.length > 10) {
-          names.sort((a, b) => a.localeCompare(b));
-          setAllQuests(names);
-          saveStored("qh-questlist", { ts: Date.now(), names });
+        return names;
+      };
+      try {
+        const [quests, free, minis] = await Promise.all([
+          fetchCategory("Quests"),
+          fetchCategory("Free-to-play quests").catch(() => [] as string[]),
+          fetchCategory("Miniquests").catch(() => [] as string[]),
+        ]);
+        if (quests.length > 10) {
+          const all = Array.from(new Set([...quests, ...minis])).sort((a, b) =>
+            a.localeCompare(b)
+          );
+          setAllQuests(all);
+          if (free.length > 5) setF2p(new Set(free));
+          if (minis.length > 0) setMiniSet(new Set(minis));
+          saveStored("qh-questlist2", {
+            ts: Date.now(),
+            all,
+            f2p: free.length > 5 ? free : F2P_FALLBACK,
+            mini: minis.length > 0 ? minis : MINI_FALLBACK,
+          });
         }
       } catch {
-        /* POPULAR remains as fallback */
+        /* fallbacks remain */
       }
     })();
   }, []);
@@ -816,7 +859,6 @@ export default function QuestHelper() {
               const own = parseGallery(html);
               const seen = new Set(g.map((x) => x.src));
               setGallery([...g, ...own.filter((x) => !seen.has(x.src))]);
-              // Start coordinates and rewards are sometimes only on the full page
               const c = parsed.meta.startCoords ? null : extractCoords(fullHtml);
               const extraRewards = parsed.rewards.length
                 ? null
@@ -973,6 +1015,15 @@ export default function QuestHelper() {
   const xpSorted = Object.entries(xpTotals).sort((a, b) => b[1] - a[1]);
   const completedList = Array.from(completed).sort();
 
+  // Quest list groups, like the in-game quest tab
+  const questStatus = (name: string): "done" | "progress" | "new" =>
+    completed.has(name) ? "done" : recentNames.has(name) ? "progress" : "new";
+  const statusColor = (s: "done" | "progress" | "new") =>
+    s === "done" ? C.qGreen : s === "progress" ? C.qYellow : C.qRed;
+  const freeQuests = allQuests.filter((n) => f2p.has(n) && !miniSet.has(n));
+  const memberQuests = allQuests.filter((n) => !f2p.has(n) && !miniSet.has(n));
+  const miniQuests = allQuests.filter((n) => miniSet.has(n));
+
   // ── Styles ──
   const frame: React.CSSProperties = {
     minHeight: "100vh",
@@ -1059,6 +1110,51 @@ export default function QuestHelper() {
     justifyContent: "center",
     fontSize: 15,
   };
+
+  const questListGroup = (title: string, names: string[]) =>
+    names.length > 0 && (
+      <div style={{ marginBottom: 14 }}>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            letterSpacing: 1,
+            textTransform: "uppercase",
+            color: C.goldDim,
+            padding: "6px 2px",
+          }}
+        >
+          {title}
+        </div>
+        <div style={{ ...card, overflow: "hidden" }}>
+          {names.map((n, i) => {
+            const s = questStatus(n);
+            return (
+              <button
+                key={n}
+                onClick={() => openQuest(n)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 14px",
+                  background: "transparent",
+                  color: statusColor(s),
+                  border: "none",
+                  borderBottom:
+                    i < names.length - 1 ? `1px solid ${C.borderSoft}` : "none",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {n}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
 
   // ── Overlay (gallery / lookup / profile) ──
   const overlay = (title: string, onClose: () => void, children: React.ReactNode) => (
@@ -1503,34 +1599,43 @@ export default function QuestHelper() {
             </div>
           )}
 
+          {/* Quest List — styled like the in-game quest tab */}
           <div style={{ marginTop: 26 }}>
-            <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-              All quests
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <div style={{ ...goldTitle, fontSize: 15 }}>Quest List</div>
+              <div style={{ fontSize: 13, color: C.textDim }}>
+                Quest Points: <b style={{ color: C.gold }}>{totalQp}</b>
+              </div>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {allQuests
-                .filter((n) => !recentNames.has(n))
-                .map((n) => {
-                  const isDone = completed.has(n);
-                  return (
-                    <button
-                      key={n}
-                      onClick={() => openQuest(n)}
-                      style={{
-                        ...chip,
-                        padding: "9px 13px",
-                        cursor: "pointer",
-                        textDecoration: isDone ? "line-through" : "none",
-                        color: isDone ? C.textDim : C.parch,
-                        borderColor: isDone ? C.green : C.border,
-                      }}
-                    >
-                      {isDone ? "✓ " : ""}
-                      {n}
-                    </button>
-                  );
-                })}
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                fontSize: 11,
+                color: C.textDim,
+                marginBottom: 10,
+              }}
+            >
+              <span>
+                <span style={{ color: C.qRed }}>●</span> Not started
+              </span>
+              <span>
+                <span style={{ color: C.qYellow }}>●</span> In progress
+              </span>
+              <span>
+                <span style={{ color: C.qGreen }}>●</span> Completed
+              </span>
             </div>
+            {questListGroup("Free Quests", freeQuests)}
+            {questListGroup("Members' Quests", memberQuests)}
+            {questListGroup("Miniquests", miniQuests)}
           </div>
         </div>
         {profileOverlay}
