@@ -1,128 +1,42 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import Nav from "@/components/Nav";
+import {
+  C,
+  frame,
+  goldTitle,
+  card,
+  bigBtn,
+  ghostBtn,
+  chip,
+  headBtn,
+  dashed,
+  toolChip,
+  toolIcon,
+} from "@/lib/theme";
+import { loadStored, saveStored, removeStored, storageKey } from "@/lib/storage";
+import { API, capitalize, fmtNum, fetchJson, normalizeSkill, resolveSrc, wikiUrl } from "@/lib/format";
+import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords } from "@/lib/quest";
+import type {
+  SkillReq,
+  Meta,
+  Step,
+  Item,
+  Quest,
+  RecentItem,
+  Player,
+  GalleryImg,
+  Lookup,
+  QuestReward,
+  Progress,
+} from "@/lib/quest";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest info & requirements → item checklist → step wizard.
 // Quest list styled like the in-game quest tab (red/yellow/green).
-
-const API = "https://oldschool.runescape.wiki/api.php";
-const WIKI = "https://oldschool.runescape.wiki";
-const TILES = "https://maps.runescape.wiki/osrs/tiles";
-
-// Common teleports for route advice: destination coords + cast time
-type Teleport = {
-  name: string;
-  x: number;
-  y: number;
-  f2p: boolean;
-  cast: number;
-  note: string;
-  icon: string;
-};
-const TELEPORTS: Teleport[] = [
-  { name: "Home Teleport (Lumbridge)", x: 3222, y: 3218, f2p: true, cast: 12, note: "free · 30 min cooldown", icon: "🏠" },
-  { name: "Varrock Teleport", x: 3213, y: 3424, f2p: true, cast: 4, note: "25 Magic", icon: "✨" },
-  { name: "Lumbridge Teleport", x: 3222, y: 3218, f2p: true, cast: 4, note: "31 Magic", icon: "✨" },
-  { name: "Falador Teleport", x: 2965, y: 3379, f2p: true, cast: 4, note: "37 Magic", icon: "✨" },
-  { name: "Camelot Teleport", x: 2757, y: 3477, f2p: false, cast: 4, note: "45 Magic", icon: "✨" },
-  { name: "Ardougne Teleport", x: 2661, y: 3300, f2p: false, cast: 4, note: "51 Magic", icon: "✨" },
-  { name: "Watchtower (Yanille)", x: 2544, y: 3095, f2p: false, cast: 4, note: "58 Magic", icon: "✨" },
-  { name: "Trollheim Teleport", x: 2890, y: 3678, f2p: false, cast: 4, note: "61 Magic", icon: "✨" },
-  { name: "Kourend Castle Teleport", x: 1643, y: 3673, f2p: false, cast: 4, note: "69 Magic", icon: "✨" },
-  { name: "Civitas illa Fortis Tele.", x: 1681, y: 3133, f2p: false, cast: 4, note: "54 Magic", icon: "✨" },
-  { name: "Glory: Edgeville", x: 3087, y: 3496, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
-  { name: "Glory: Al Kharid", x: 3293, y: 3163, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
-  { name: "Glory: Draynor", x: 3105, y: 3251, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
-  { name: "Glory: Karamja", x: 2918, y: 3176, f2p: false, cast: 3, note: "Amulet of glory", icon: "💎" },
-  { name: "Dueling: Ferox Enclave", x: 3150, y: 3635, f2p: false, cast: 3, note: "Ring of dueling", icon: "💍" },
-  { name: "Dueling: Castle Wars", x: 2440, y: 3089, f2p: false, cast: 3, note: "Ring of dueling", icon: "💍" },
-  { name: "Games: Burthorpe", x: 2898, y: 3546, f2p: false, cast: 3, note: "Games necklace", icon: "📿" },
-  { name: "Games: Barbarian Outpost", x: 2519, y: 3571, f2p: false, cast: 3, note: "Games necklace", icon: "📿" },
-];
-
-// Approximate F2P areas as [x1, y1, x2, y2] rectangles (members areas get dimmed)
-const F2P_RECTS: [number, number, number, number][] = [
-  [2920, 3000, 3400, 3560], // mainland: Falador–Varrock–Lumbridge–Al Kharid
-  [2941, 3560, 3392, 3968], // F2P Wilderness
-  [2872, 3130, 2919, 3202], // Musa Point (Karamja)
-  [2805, 3220, 2875, 3320], // Crandor
-  [2506, 2940, 2615, 3065], // Corsair Cove
-];
-
-type RouteOption = {
-  icon: string;
-  name: string;
-  sec: number;
-  detail: string;
-  f2p: boolean;
-};
-
-function chebyshev(a: { x: number; y: number }, b: { x: number; y: number }): number {
-  return Math.max(
-    Math.abs(Math.round(a.x) - Math.round(b.x)),
-    Math.abs(Math.round(a.y) - Math.round(b.y))
-  );
-}
-
-function runSecs(tiles: number): number {
-  return Math.ceil(tiles / 2) * 0.6;
-}
-
-function fmtSec(s: number): string {
-  const r = Math.round(s);
-  if (r < 90) return `${r}s`;
-  return `${Math.floor(r / 60)}m ${r % 60}s`;
-}
-
-// Best travel options from a to b, sorted by estimated time
-function buildRouteOptions(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-  f2pOnly: boolean
-): RouteOption[] {
-  const direct = chebyshev(a, b);
-  const opts: RouteOption[] = [
-    {
-      icon: "🏃",
-      name: "Run from your position",
-      sec: runSecs(direct),
-      detail: `${direct} tiles`,
-      f2p: true,
-    },
-  ];
-  TELEPORTS.filter((t) => !f2pOnly || t.f2p).forEach((t) => {
-    const d = chebyshev(t, b);
-    opts.push({
-      icon: t.icon,
-      name: t.name,
-      sec: t.cast + runSecs(d),
-      detail: `${t.note} → run ${d} tiles`,
-      f2p: t.f2p,
-    });
-  });
-  opts.sort((x, y) => x.sec - y.sec);
-  return opts.slice(0, 5);
-}
-
-const C = {
-  bg: "#26211A",
-  panel: "#332C22",
-  panelSoft: "#3B342A",
-  border: "#57492F",
-  goldDim: "#B08A3E",
-  borderSoft: "#463C2C",
-  gold: "#E7B84C",
-  parch: "#E9DDBE",
-  ink: "#3A2E19",
-  text: "#D8CDB4",
-  textDim: "#9A8E74",
-  green: "#7CB363",
-  red: "#C96A5B",
-  qRed: "#E05C5C",
-  qYellow: "#E7C84C",
-  qGreen: "#7CC763",
-};
 
 const POPULAR = [
   "Cook's Assistant", "The Restless Ghost", "Rune Mysteries", "Sheep Shearer",
@@ -153,119 +67,10 @@ const MINI_FALLBACK = [
   "The General's Shadow", "The Mage Arena", "The Mage Arena II",
 ];
 
-const SKILLS = new Set([
-  "attack", "strength", "defence", "ranged", "prayer", "magic",
-  "runecraft", "runecrafting", "hitpoints", "crafting", "mining",
-  "smithing", "fishing", "cooking", "firemaking", "woodcutting",
-  "agility", "herblore", "thieving", "fletching", "slayer",
-  "farming", "construction", "hunter",
-]);
-
-type SkillReq = { level: number; skill: string; note: string };
-type Coords = { x: number; y: number; plane?: number; mapId?: number };
-type Meta = {
-  difficulty: string | null;
-  length: string | null;
-  start: string | null;
-  startCoords: Coords | null;
-  skillReqs: SkillReq[];
-  otherReqs: string[];
-  enemies: string[];
-};
-type LinkRef = { label: string; page: string };
-type Step = {
-  text: string;
-  info: string[];
-  images: string[];
-  links: LinkRef[];
-  section: string;
-};
-type Item = { name: string; info: string | null };
-type Quest = {
-  name: string;
-  steps: Step[];
-  items: Item[];
-  meta: Meta;
-  rewards: string[];
-};
-type RecentItem = { name: string; done: number; total: number };
-type Player = { name: string; skills: Record<string, number> };
-type GalleryImg = { src: string; caption: string };
-type Lookup = {
-  title: string;
-  page: string;
-  loading: boolean;
-  images: string[];
-  coords: Coords | null;
-  error: string | null;
-};
-type WorldMap = {
-  x: number;
-  y: number;
-  title: string;
-  marker: boolean;
-  plane?: number;
-  mapId?: number;
-};
-type QuestReward = { qp: number; xp: Record<string, number> };
-type Progress = Record<string, QuestReward>;
-
-// Load Leaflet once from CDN
-let leafletPromise: Promise<any> | null = null;
-function loadLeaflet(): Promise<any> {
-  const w = window as any;
-  if (w.L) return Promise.resolve(w.L);
-  if (leafletPromise) return leafletPromise;
-  leafletPromise = new Promise((resolve, reject) => {
-    const css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href =
-      "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
-    document.head.appendChild(css);
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
-    s.onload = () => resolve((window as any).L);
-    s.onerror = () => reject(new Error("Failed to load Leaflet"));
-    document.head.appendChild(s);
-  });
-  return leafletPromise;
-}
-
-function cleanText(s: string): string {
-  return s
-    .replace(/\[\d+\]/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/\s+([,.;:!?])/g, "$1")
-    .trim();
-}
-
-function normalizeSkill(s: string): string {
-  const t = s.toLowerCase().trim();
-  return t === "runecrafting" ? "runecraft" : t;
-}
-
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function fmtNum(n: number): string {
-  return Math.round(n).toLocaleString("en-US");
-}
-
-function resolveSrc(raw: string): string {
-  if (raw.startsWith("//")) return "https:" + raw;
-  if (raw.startsWith("/")) return WIKI + raw;
-  return raw;
-}
-
-function wikiUrl(page: string): string {
-  return WIKI + "/w/" + encodeURIComponent(page.replace(/ /g, "_"));
-}
-
-// Render text with \u0001…\u0002 bold markers as real bold text
+// Render text with … bold markers as real bold text
 function renderRich(t: string): React.ReactNode {
-  if (!t.includes("\u0001")) return t;
-  const parts = t.split(/[\u0001\u0002]/);
+  if (!t.includes("")) return t;
+  const parts = t.split(/[]/);
   return parts.map((p, i) =>
     i % 2 === 1 ? (
       <b key={i} style={{ fontWeight: 800 }}>
@@ -277,344 +82,8 @@ function renderRich(t: string): React.ReactNode {
   );
 }
 
-// Extract game coordinates from wiki HTML (embedded maps)
-function extractCoords(html: string): Coords | null {
-  const withMeta = (x: number, y: number): Coords | null => {
-    if (x < 1000 || x > 13000 || y < 1000 || y > 13000) return null;
-    const c: Coords = { x, y };
-    const pm = html.match(/"plane"\s*:\s*(\d)/) || html.match(/data-plane="(\d)"/);
-    if (pm) c.plane = Math.min(3, Math.max(0, parseInt(pm[1], 10)));
-    const mm =
-      html.match(/"mapID"\s*:\s*(-?\d+)/i) || html.match(/data-mapid="(-?\d+)"/i);
-    if (mm) {
-      const id = parseInt(mm[1], 10);
-      if (id > 0) c.mapId = id; // -1/0 both mean the surface map
-    }
-    return c;
-  };
-  let m = html.match(/"coordinates"\s*:\s*\[\s*(\d{3,5})(?:\.\d+)?\s*,\s*(\d{3,5})/);
-  if (m) {
-    const r = withMeta(+m[1], +m[2]);
-    if (r) return r;
-  }
-  m = html.match(/data-x="(\d{3,5})"[^>]*data-y="(\d{3,5})"/);
-  if (m) {
-    const r = withMeta(+m[1], +m[2]);
-    if (r) return r;
-  }
-  m = html.match(/data-lon="(\d{3,5}(?:\.\d+)?)"[^>]*data-lat="(\d{3,5}(?:\.\d+)?)"/);
-  if (m) {
-    const r = withMeta(Math.round(+m[1]), Math.round(+m[2]));
-    if (r) return r;
-  }
-  m = html.match(/data-lat="(\d{3,5}(?:\.\d+)?)"[^>]*data-lon="(\d{3,5}(?:\.\d+)?)"/);
-  if (m) {
-    const r = withMeta(Math.round(+m[2]), Math.round(+m[1]));
-    if (r) return r;
-  }
-  return null;
-}
-
-// Official OSRS combat level formula
-function calcCombat(skills: Record<string, number>): number {
-  const g = (n: string) => skills[n] ?? 1;
-  const base = 0.25 * (g("defence") + Math.max(g("hitpoints"), 10) + Math.floor(g("prayer") / 2));
-  const melee = 0.325 * (g("attack") + g("strength"));
-  const range = 0.325 * Math.floor((3 * g("ranged")) / 2);
-  const mage = 0.325 * Math.floor((3 * g("magic")) / 2);
-  return Math.floor(base + Math.max(melee, range, mage));
-}
-
-// Highest "(level X)" found in an enemy description
-function enemyLevel(s: string): number | null {
-  const matches = Array.from(s.matchAll(/levels?\s*(\d+)/gi));
-  if (!matches.length) return null;
-  return Math.max(...matches.map((m) => parseInt(m[1], 10)));
-}
-
-// Split "Bucket of milk (can be bought at...)" into name + extra info
-function splitItem(raw: string): Item {
-  const m = raw.match(/^(.*?)\s*\((.+)\)\s*$/);
-  if (m && m[1].trim()) {
-    return { name: cleanText(m[1]), info: cleanText(m[2]) };
-  }
-  return { name: cleanText(raw), info: null };
-}
-
-// Extract quest points + XP amounts from reward lines
-function parseRewardStats(rewards: string[]): QuestReward {
-  let qp = 0;
-  const xp: Record<string, number> = {};
-  rewards.forEach((line) => {
-    const q = line.match(/(\d+)\s+quest points?/i);
-    if (q) qp = Math.max(qp, parseInt(q[1], 10));
-    const rx = /([\d,]+(?:\.\d+)?)\s+([A-Za-z]+)\s+(?:experience|exp\b|xp\b)/gi;
-    let m: RegExpExecArray | null;
-    while ((m = rx.exec(line))) {
-      const amount = parseFloat(m[1].replace(/,/g, ""));
-      const skill = normalizeSkill(m[2]);
-      if (SKILLS.has(skill) && amount > 0) {
-        xp[skill] = (xp[skill] || 0) + amount;
-      }
-    }
-  });
-  return { qp, xp };
-}
-
-async function fetchJson(url: string): Promise<any> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Wiki returned status " + res.status);
-  return res.json();
-}
-
-function loadStored(key: string): any {
-  try {
-    const v = localStorage.getItem(key);
-    return v ? JSON.parse(v) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveStored(key: string, val: any): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(val));
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-function removeStored(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-const storageKey = (name: string) => "qh-quest-" + name.replace(/[\s/\\'"]+/g, "_");
-
-// Own text of each li element, excluding nested lists
-function ownLiTexts(container: Element): string[] {
-  const out: string[] = [];
-  container.querySelectorAll("li").forEach((li) => {
-    const clone = li.cloneNode(true) as Element;
-    clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
-    const t = cleanText(clone.textContent || "");
-    if (t) out.push(t);
-  });
-  return out;
-}
-
-// Captioned images from a full guide page
-function parseGallery(html: string): GalleryImg[] {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const out: GalleryImg[] = [];
-  const seen = new Set<string>();
-  doc.querySelectorAll("figure, div.thumb").forEach((fig) => {
-    const img = fig.querySelector("img");
-    if (!img) return;
-    const w = parseInt(img.getAttribute("width") || "0", 10);
-    if (w < 100) return;
-    const src = resolveSrc(img.getAttribute("src") || "");
-    if (!src || seen.has(src)) return;
-    seen.add(src);
-    const capEl = fig.querySelector("figcaption, .thumbcaption");
-    const caption = cleanText(capEl?.textContent || "");
-    out.push({ src, caption });
-  });
-  return out.slice(0, 30);
-}
-
-// Split a step into text + info + images + links
-function makeStep(li: Element, section: string): Step | null {
-  const clone = li.cloneNode(true) as Element;
-  clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
-
-  const images: string[] = [];
-  clone.querySelectorAll("img").forEach((img) => {
-    if (images.length >= 2) return;
-    const w = parseInt(img.getAttribute("width") || "0", 10);
-    if (w < 80) return;
-    const src = resolveSrc(img.getAttribute("src") || "");
-    if (src) images.push(src);
-  });
-
-  const links: LinkRef[] = [];
-  clone.querySelectorAll("a").forEach((a) => {
-    if (links.length >= 4) return;
-    const href = a.getAttribute("href") || "";
-    if (!href.startsWith("/w/")) return;
-    if (a.querySelector("img")) return;
-    const page = decodeURIComponent(href.slice(3))
-      .split("#")[0]
-      .replace(/_/g, " ");
-    const label = cleanText(a.textContent || "");
-    if (!label || label.length < 3 || !page) return;
-    if (links.some((l) => l.page === page)) return;
-    links.push({ label, page });
-  });
-
-  // Mark bold text (dialogue choices) with sentinel characters so it
-  // survives the plain-text extraction and can be rendered bold again
-  clone.querySelectorAll("b, strong").forEach((el) => {
-    const t = (el.textContent || "").trim();
-    if (t) el.textContent = "\u0001" + t + "\u0002";
-  });
-
-  const raw = cleanText(clone.textContent || "");
-  if (!raw) return null;
-
-  const infos: string[] = [];
-  const stripped = raw.replace(/\s*\(([^()]+)\)/g, (match, inner) => {
-    const t = cleanText(inner);
-    if (t.length >= 12) {
-      infos.push(t);
-      return "";
-    }
-    return match;
-  });
-
-  return { text: cleanText(stripped), info: infos, images, links, section };
-}
-
-// Turn wiki HTML into steps + items + quest info + rewards
-function parseGuide(html: string): {
-  steps: Step[];
-  items: Item[];
-  meta: Meta;
-  rewards: string[];
-} {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const root = doc.body;
-
-  root
-    .querySelectorAll(
-      ".navbox, .references, .reference, #toc, .toc, .mw-editsection, .messagebox, .infobox, style, script, sup"
-    )
-    .forEach((el) => el.remove());
-
-  const items: Item[] = [];
-  const rewards: string[] = [];
-  const meta: Meta = {
-    difficulty: null,
-    length: null,
-    start: null,
-    startCoords: null,
-    skillReqs: [],
-    otherReqs: [],
-    enemies: [],
-  };
-
-  // Reward boxes (tables/divs with "reward" in the class name)
-  root.querySelectorAll("table, div").forEach((el) => {
-    const cls = (el.getAttribute("class") || "").toLowerCase();
-    if (!cls.includes("reward")) return;
-    el.querySelectorAll("tr, li").forEach((row) => {
-      const t = cleanText(row.textContent || "");
-      if (t && t.length < 200) rewards.push(t);
-    });
-    el.remove();
-  });
-
-  const details = root.querySelector("table.questdetails");
-  if (details) {
-    details.querySelectorAll("tr").forEach((tr) => {
-      const th = tr.querySelector("th");
-      const td = tr.querySelector("td");
-      if (!th || !td) return;
-      const label = (th.textContent || "").toLowerCase();
-
-      if (/item/.test(label)) {
-        ownLiTexts(td).forEach((t) => items.push(splitItem(t)));
-      } else if (/difficulty/.test(label)) {
-        meta.difficulty = cleanText(td.textContent || "") || null;
-      } else if (/length/.test(label)) {
-        meta.length = cleanText(td.textContent || "") || null;
-      } else if (/start/.test(label)) {
-        // Coordinates come from the embedded "Show on map" link
-        meta.startCoords = extractCoords(td.outerHTML || "");
-        const tdClone = td.cloneNode(true) as Element;
-        tdClone.querySelectorAll("a").forEach((a) => {
-          if (/show on map/i.test(a.textContent || "")) a.remove();
-        });
-        meta.start = cleanText(tdClone.textContent || "") || null;
-      } else if (/enem|defeat/.test(label)) {
-        const lis = ownLiTexts(td);
-        meta.enemies = lis.length
-          ? lis
-          : cleanText(td.textContent || "")
-          ? [cleanText(td.textContent || "")]
-          : [];
-      } else if (/requirement/.test(label)) {
-        ownLiTexts(td).forEach((t) => {
-          if (t.endsWith(":")) return; // header lines like "Completion of..."
-          const m = t.match(/^(\d+)\s+([A-Za-z]+)(.*)$/);
-          if (m && SKILLS.has(m[2].toLowerCase())) {
-            meta.skillReqs.push({
-              level: parseInt(m[1], 10),
-              skill: m[2],
-              note: cleanText(m[3] || ""),
-            });
-          } else {
-            meta.otherReqs.push(t);
-          }
-        });
-      }
-    });
-    details.remove();
-  }
-
-  const SKIP = /reference|navigat|see also|trivia|gallery|changes/i;
-  const steps: Step[] = [];
-  let sectionTitle = "Walkthrough";
-  let mode: "steps" | "skip" | "rewards" = "steps";
-
-  const pushLis = (listEl: Element) => {
-    Array.from(listEl.children).forEach((li) => {
-      if (li.tagName !== "LI") return;
-      if (mode === "rewards") {
-        const clone = li.cloneNode(true) as Element;
-        clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
-        const t = cleanText(clone.textContent || "");
-        if (t) rewards.push(t);
-      } else {
-        const st = makeStep(li, sectionTitle);
-        if (st) steps.push(st);
-      }
-      li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => pushLis(sub));
-    });
-  };
-
-  const walk = (node: Element) => {
-    Array.from(node.children).forEach((child) => {
-      const tag = child.tagName;
-      if (tag === "H2" || tag === "H3") {
-        const title = cleanText(child.textContent || "");
-        if (/reward/i.test(title)) {
-          mode = "rewards";
-        } else if (SKIP.test(title)) {
-          mode = "skip";
-        } else {
-          mode = "steps";
-          if (title) sectionTitle = title;
-        }
-        return;
-      }
-      if (mode === "skip") return;
-      if (tag === "UL" || tag === "OL") {
-        if (!child.closest("table")) pushLis(child);
-        return;
-      }
-      if (tag === "DIV" || tag === "SECTION") walk(child);
-    });
-  };
-  walk(root);
-
-  return { steps, items, meta, rewards };
-}
-
 export default function QuestHelper() {
+  const router = useRouter();
   const [view, setView] = useState<"home" | "quest">("home");
   const [phase, setPhase] = useState<"info" | "items" | "steps" | "done">("info");
   const [query, setQuery] = useState("");
@@ -626,8 +95,8 @@ export default function QuestHelper() {
   const [miniSet, setMiniSet] = useState<Set<string>>(new Set(MINI_FALLBACK));
   const [completed, setCompleted] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<Progress>({});
+  const [fetchingRewards, setFetchingRewards] = useState<Set<string>>(new Set());
   const [lastReward, setLastReward] = useState<QuestReward | null>(null);
-  const [profileOpen, setProfileOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [quest, setQuest] = useState<Quest | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
@@ -638,8 +107,6 @@ export default function QuestHelper() {
   const [gallery, setGallery] = useState<GalleryImg[]>([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [lookup, setLookup] = useState<Lookup | null>(null);
-  const [worldMap, setWorldMap] = useState<WorldMap | null>(null);
-  const [mapError, setMapError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rsn, setRsn] = useState("");
@@ -647,26 +114,6 @@ export default function QuestHelper() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
-  const mapDivRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<any>(null);
-  const layerRef = useRef<any>(null);
-  const planeRef = useRef(0);
-  const routeModeRef = useRef(false);
-  const routeRef = useRef<{ pts: { x: number; y: number }[]; layers: any[] }>({
-    pts: [],
-    layers: [],
-  });
-  const [floor, setFloor] = useState(0);
-  const [routeMode, setRouteMode] = useState(false);
-  const [routeResult, setRouteResult] = useState<{
-    a: { x: number; y: number };
-    b: { x: number; y: number };
-    tiles: number;
-  } | null>(null);
-  const [routeModalOpen, setRouteModalOpen] = useState(false);
-  const [f2pMode, setF2pMode] = useState(false);
-  const f2pModeRef = useRef(false);
-  const f2pLayerRef = useRef<any>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
@@ -683,12 +130,6 @@ export default function QuestHelper() {
 
     const prog = loadStored("qh-progress");
     if (prog && typeof prog === "object") setProgress(prog);
-
-    const f2p = loadStored("qh-f2p");
-    if (f2p === true) {
-      setF2pMode(true);
-      f2pModeRef.current = true;
-    }
 
     const savedPlayer = loadStored("qh-rsn");
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
@@ -805,190 +246,6 @@ export default function QuestHelper() {
     })();
   }, []);
 
-  // Initialise the world map when opened
-  useEffect(() => {
-    if (!worldMap) return;
-    let map: any = null;
-    let cancelled = false;
-    setMapError(null);
-    setRouteResult(null);
-    setRouteModalOpen(false);
-    setRouteMode(false);
-    routeModeRef.current = false;
-    routeRef.current = { pts: [], layers: [] };
-    planeRef.current = worldMap.plane ?? 0;
-    setFloor(worldMap.plane ?? 0);
-    (async () => {
-      try {
-        let v: string | null = null;
-        const cached = loadStored("qh-mapver");
-        if (cached && cached.v && Date.now() - (cached.ts || 0) < 86400000) {
-          v = cached.v;
-        }
-        if (!v) {
-          const res = await fetch("/api/mapconfig");
-          const d = await res.json();
-          if (!res.ok || !d.cacheVersion) throw new Error();
-          v = d.cacheVersion as string;
-          saveStored("qh-mapver", { v, ts: Date.now() });
-        }
-
-        const L = await loadLeaflet();
-        if (cancelled || !mapDivRef.current) return;
-
-        map = L.map(mapDivRef.current, {
-          crs: L.CRS.Simple,
-          minZoom: -3,
-          maxZoom: 5,
-          zoomControl: true,
-          attributionControl: true,
-        });
-
-        mapRef.current = map;
-
-        const mapId = worldMap.mapId && worldMap.mapId > 0 ? worldMap.mapId : 0;
-        const OsrsTiles = L.TileLayer.extend({
-          getTileUrl: function (c: any) {
-            return `${TILES}/${mapId}_${v}/${c.z}/${planeRef.current}_${c.x}_${-(c.y + 1)}.png`;
-          },
-        });
-        const layer = new OsrsTiles("", {
-          minZoom: -3,
-          maxZoom: 5,
-          minNativeZoom: -3,
-          maxNativeZoom: 3,
-          tileSize: 256,
-          attribution:
-            'Map © Jagex · tiles <a href="https://weirdgloop.org/licensing" target="_blank" rel="noopener">RuneScape Wiki</a>',
-        });
-        layer.addTo(map);
-        layerRef.current = layer;
-
-        const pos = [worldMap.y + 0.5, worldMap.x + 0.5];
-        map.setView(pos, worldMap.marker ? 2 : 0);
-        if (worldMap.marker) {
-          L.circleMarker(pos, {
-            radius: 9,
-            color: "#E7B84C",
-            weight: 3,
-            fillColor: "#C96A5B",
-            fillOpacity: 0.9,
-          })
-            .addTo(map)
-            .bindTooltip(worldMap.title);
-        }
-
-        // Route measuring: tap start, tap destination
-        map.on("click", (e: any) => {
-          if (!routeModeRef.current) return;
-          const pt = { x: e.latlng.lng, y: e.latlng.lat };
-          const r = routeRef.current;
-          if (r.pts.length >= 2) {
-            r.layers.forEach((ly: any) => map.removeLayer(ly));
-            r.pts = [];
-            r.layers = [];
-            setRouteResult(null);
-            setRouteModalOpen(false);
-          }
-          r.pts.push(pt);
-          const mk = L.circleMarker([pt.y, pt.x], {
-            radius: 7,
-            color: "#E7B84C",
-            weight: 3,
-            fillColor: r.pts.length === 1 ? "#7CB363" : "#C96A5B",
-            fillOpacity: 0.95,
-          }).addTo(map);
-          r.layers.push(mk);
-          if (r.pts.length === 2) {
-            const [a, b] = r.pts;
-            const line = L.polyline(
-              [
-                [a.y, a.x],
-                [b.y, b.x],
-              ],
-              { color: "#E7B84C", weight: 3, dashArray: "6 6" }
-            ).addTo(map);
-            r.layers.push(line);
-            // OSRS movement allows diagonals → Chebyshev distance
-            setRouteResult({ a, b, tiles: chebyshev(a, b) });
-            setRouteModalOpen(true);
-          }
-        });
-
-        // Dim members areas when F2P mode is on
-        if (f2pModeRef.current) addF2pOverlay(map, L);
-      } catch {
-        if (!cancelled) setMapError("The map couldn't be loaded.");
-      }
-    })();
-    return () => {
-      cancelled = true;
-      mapRef.current = null;
-      layerRef.current = null;
-      f2pLayerRef.current = null;
-      routeRef.current = { pts: [], layers: [] };
-      if (map) map.remove();
-    };
-  }, [worldMap]);
-
-  // Dark polygon over the whole world with F2P areas cut out as holes
-  const addF2pOverlay = (map: any, L: any) => {
-    if (f2pLayerRef.current) return;
-    const outer = [
-      [0, 0],
-      [0, 12800],
-      [12800, 12800],
-      [12800, 0],
-    ];
-    const holes = F2P_RECTS.map(([x1, y1, x2, y2]) => [
-      [y1, x1],
-      [y1, x2],
-      [y2, x2],
-      [y2, x1],
-    ]);
-    f2pLayerRef.current = L.polygon([outer, ...holes], {
-      stroke: false,
-      fillColor: "#000",
-      fillOpacity: 0.55,
-      interactive: false,
-    }).addTo(map);
-  };
-
-  const toggleF2pMode = () => {
-    const next = !f2pModeRef.current;
-    f2pModeRef.current = next;
-    setF2pMode(next);
-    saveStored("qh-f2p", next);
-    const L = (window as any).L;
-    if (!mapRef.current || !L) return;
-    if (next) {
-      addF2pOverlay(mapRef.current, L);
-    } else if (f2pLayerRef.current) {
-      mapRef.current.removeLayer(f2pLayerRef.current);
-      f2pLayerRef.current = null;
-    }
-  };
-
-  const setMapFloor = (p: number) => {
-    planeRef.current = p;
-    setFloor(p);
-    if (layerRef.current) layerRef.current.redraw();
-  };
-
-  const toggleRouteMode = () => {
-    const next = !routeModeRef.current;
-    routeModeRef.current = next;
-    setRouteMode(next);
-    if (!next && mapRef.current) {
-      routeRef.current.layers.forEach((ly: any) =>
-        mapRef.current.removeLayer(ly)
-      );
-      routeRef.current = { pts: [], layers: [] };
-      setRouteResult(null);
-      setRouteModalOpen(false);
-    }
-  };
-
   // Wiki search suggestions + local list
   useEffect(() => {
     const q = query.trim().toLowerCase();
@@ -1050,16 +307,60 @@ export default function QuestHelper() {
 
   const combatLevel = player ? calcCombat(player.skills) : null;
 
+  // Look up a quest's QP + XP rewards on the wiki (used when a quest is
+  // ticked off as already done, without playing through it in the app)
+  const fetchQuestReward = async (name: string): Promise<QuestReward | null> => {
+    try {
+      const data = await fetchJson(
+        `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
+          name
+        )}`
+      );
+      if (data.error) return null;
+      const { rewards } = parseGuide(data.parse.text["*"]);
+      return parseRewardStats(rewards);
+    } catch {
+      return null;
+    }
+  };
+
   const toggleCompleted = (name: string) => {
+    const wasCompleted = completed.has(name);
     setCompleted((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) {
-        next.delete(name);
-      } else {
-        next.add(name);
-      }
+      if (wasCompleted) next.delete(name);
+      else next.add(name);
       saveStored("qh-completed", Array.from(next));
       return next;
+    });
+
+    if (wasCompleted) {
+      // Unmarking: drop any rewards tracked for this quest
+      setProgress((prev) => {
+        if (!(name in prev)) return prev;
+        const next = { ...prev };
+        delete next[name];
+        saveStored("qh-progress", next);
+        return next;
+      });
+      return;
+    }
+
+    // Marking done: fetch its rewards from the wiki if we don't have them yet
+    if (progress[name]) return;
+    setFetchingRewards((prev) => new Set(prev).add(name));
+    fetchQuestReward(name).then((reward) => {
+      setFetchingRewards((prev) => {
+        const next = new Set(prev);
+        next.delete(name);
+        return next;
+      });
+      if (!reward) return;
+      setProgress((prev) => {
+        const next = { ...prev, [name]: reward };
+        saveStored("qh-progress", next);
+        return next;
+      });
     });
   };
 
@@ -1112,6 +413,25 @@ export default function QuestHelper() {
       step,
       items: Array.from(items),
     });
+  };
+
+  // Navigate to the world map page for a specific target
+  const goToMap = (target: {
+    x: number;
+    y: number;
+    title: string;
+    marker: boolean;
+    plane?: number;
+    mapId?: number;
+  }) => {
+    const params = new URLSearchParams();
+    params.set("x", String(Math.round(target.x)));
+    params.set("y", String(Math.round(target.y)));
+    params.set("title", target.title);
+    if (target.marker) params.set("marker", "1");
+    if (target.plane !== undefined) params.set("plane", String(target.plane));
+    if (target.mapId !== undefined) params.set("mapId", String(target.mapId));
+    router.push(`/map?${params.toString()}`);
   };
 
   const openQuest = async (name: string) => {
@@ -1338,16 +658,8 @@ export default function QuestHelper() {
       quest.meta.enemies.length > 0
     : false;
 
-  // Profile totals
+  // Quest points shown in the quest-list header
   const totalQp = Object.values(progress).reduce((s, p) => s + (p.qp || 0), 0);
-  const xpTotals: Record<string, number> = {};
-  Object.values(progress).forEach((p) => {
-    Object.entries(p.xp || {}).forEach(([sk, amt]) => {
-      xpTotals[sk] = (xpTotals[sk] || 0) + amt;
-    });
-  });
-  const xpSorted = Object.entries(xpTotals).sort((a, b) => b[1] - a[1]);
-  const completedList = Array.from(completed).sort();
 
   // What's next: first quests from the Optimal Quest Guide not yet done
   const questByLower = new Map(allQuests.map((n) => [n.toLowerCase(), n]));
@@ -1365,93 +677,6 @@ export default function QuestHelper() {
   const freeQuests = allQuests.filter((n) => f2p.has(n) && !miniSet.has(n));
   const memberQuests = allQuests.filter((n) => !f2p.has(n) && !miniSet.has(n));
   const miniQuests = allQuests.filter((n) => miniSet.has(n));
-
-  // ── Styles ──
-  const frame: React.CSSProperties = {
-    minHeight: "100vh",
-    background: C.bg,
-    color: C.text,
-    fontFamily: "system-ui, sans-serif",
-    fontSize: 15,
-    lineHeight: 1.45,
-  };
-  const goldTitle: React.CSSProperties = {
-    fontFamily: "Georgia, 'Times New Roman', serif",
-    color: C.gold,
-    letterSpacing: 0.5,
-  };
-  const card: React.CSSProperties = {
-    background: C.panel,
-    border: `1px solid ${C.borderSoft}`,
-    borderRadius: 10,
-  };
-  const bigBtn: React.CSSProperties = {
-    display: "block",
-    width: "100%",
-    padding: "15px",
-    fontSize: 17,
-    fontWeight: 700,
-    background: C.gold,
-    color: C.ink,
-    border: "none",
-    borderRadius: 12,
-    cursor: "pointer",
-    boxShadow: "0 4px 14px rgba(0,0,0,.45)",
-  };
-  const ghostBtn: React.CSSProperties = {
-    display: "block",
-    width: "100%",
-    padding: "13px",
-    fontSize: 15,
-    fontWeight: 600,
-    background: "transparent",
-    color: C.textDim,
-    border: `1px solid ${C.borderSoft}`,
-    borderRadius: 12,
-    cursor: "pointer",
-  };
-  const chip: React.CSSProperties = {
-    padding: "6px 12px",
-    background: C.panelSoft,
-    border: `1px solid ${C.border}`,
-    borderRadius: 20,
-    fontSize: 13,
-    color: C.parch,
-  };
-  const headBtn: React.CSSProperties = {
-    background: "transparent",
-    border: `1px solid ${C.borderSoft}`,
-    color: C.gold,
-    borderRadius: 8,
-    padding: "7px 10px",
-    fontSize: 15,
-    cursor: "pointer",
-  };
-  const dashed: React.CSSProperties = {
-    borderTop: `1px dashed ${C.goldDim}`,
-    margin: "14px 0 0",
-  };
-  const toolChip: React.CSSProperties = {
-    padding: "7px 12px",
-    background: "rgba(58,46,25,.08)",
-    color: C.ink,
-    border: "1.5px solid rgba(58,46,25,.45)",
-    borderRadius: 16,
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: "pointer",
-  };
-  const toolIcon: React.CSSProperties = {
-    ...toolChip,
-    width: 34,
-    height: 34,
-    padding: 0,
-    borderRadius: "50%",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 15,
-  };
 
   const questListGroup = (title: string, names: string[]) =>
     names.length > 0 && (
@@ -1472,6 +697,7 @@ export default function QuestHelper() {
           {names.map((n, i) => {
             const s = questStatus(n);
             const isDone = s === "done";
+            const isFetching = fetchingRewards.has(n);
             return (
               <button
                 key={n}
@@ -1511,7 +737,7 @@ export default function QuestHelper() {
                         : `2px solid ${C.border}`,
                     }}
                   >
-                    ✓
+                    {isFetching ? "⏳" : "✓"}
                   </span>
                 )}
                 <span style={{ flex: 1, minWidth: 0 }}>{n}</span>
@@ -1522,7 +748,7 @@ export default function QuestHelper() {
       </div>
     );
 
-  // ── Overlay (gallery / lookup / profile) ──
+  // ── Overlay (lookup / step list / gallery) ──
   const overlay = (title: string, onClose: () => void, children: React.ReactNode) => (
     <div
       onClick={onClose}
@@ -1581,400 +807,22 @@ export default function QuestHelper() {
     </div>
   );
 
-  // ── Profile overlay ──
-  const profileOverlay =
-    profileOpen &&
-    overlay("👤 Profile", () => setProfileOpen(false), (
-      <>
-        {player ? (
-          <div style={{ ...card, padding: "12px 14px", marginBottom: 12 }}>
-            <div style={{ color: C.parch, fontWeight: 700, fontSize: 16 }}>
-              {player.name}
-            </div>
-            {combatLevel !== null && (
-              <div style={{ fontSize: 13, color: C.textDim }}>
-                Combat level <b style={{ color: C.gold }}>{combatLevel}</b>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12 }}>
-            Enter your RSN on the home screen to link your stats.
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <div style={{ ...card, flex: 1, padding: "12px 10px", textAlign: "center" }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.gold }}>
-              {completedList.length}
-            </div>
-            <div style={{ fontSize: 12, color: C.textDim }}>🏆 Quests done</div>
-          </div>
-          <div style={{ ...card, flex: 1, padding: "12px 10px", textAlign: "center" }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.gold }}>
-              {totalQp}
-            </div>
-            <div style={{ fontSize: 12, color: C.textDim }}>⭐ Quest points</div>
-          </div>
-        </div>
-
-        <div style={{ ...goldTitle, fontSize: 15, fontWeight: 700, marginBottom: 6 }}>
-          📈 XP earned from quests
-        </div>
-        {xpSorted.length === 0 && (
-          <div style={{ fontSize: 13, color: C.textDim, marginBottom: 12 }}>
-            No XP tracked yet — complete a quest in the app and its rewards will
-            show up here.
-          </div>
-        )}
-        {xpSorted.map(([sk, amt]) => (
-          <div
-            key={sk}
-            style={{
-              ...card,
-              display: "flex",
-              justifyContent: "space-between",
-              padding: "9px 14px",
-              marginBottom: 5,
-              fontSize: 14,
-            }}
-          >
-            <span style={{ color: C.parch }}>{capitalize(sk)}</span>
-            <span style={{ color: C.gold, fontWeight: 700 }}>
-              +{fmtNum(amt)} xp
-            </span>
-          </div>
-        ))}
-
-        <div
-          style={{
-            ...goldTitle,
-            fontSize: 15,
-            fontWeight: 700,
-            margin: "14px 0 6px",
-          }}
-        >
-          ✅ Completed quests
-        </div>
-        {completedList.length === 0 && (
-          <div style={{ fontSize: 13, color: C.textDim }}>
-            Nothing completed yet — your adventure awaits!
-          </div>
-        )}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {completedList.map((n) => (
-            <span
-              key={n}
-              style={{
-                ...chip,
-                borderColor: C.green,
-                color: C.textDim,
-                fontSize: 12,
-              }}
-            >
-              ✓ {n}
-            </span>
-          ))}
-        </div>
-
-        <div style={{ fontSize: 11, color: C.textDim, marginTop: 14 }}>
-          Quest points and XP are tracked from quests completed in this app.
-        </div>
-      </>
-    ));
-
-  // ── World map (fullscreen) ──
-  const worldMapOverlay = worldMap && (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 60,
-        background: C.bg,
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 14px",
-          borderBottom: `2px solid ${C.border}`,
-        }}
-      >
-        <div
-          style={{
-            ...goldTitle,
-            fontSize: 16,
-            fontWeight: 700,
-            flex: 1,
-            minWidth: 0,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          🗺️ {worldMap.title}
-        </div>
-        <button
-          onClick={toggleRouteMode}
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: "50%",
-            background: routeMode ? C.gold : C.panelSoft,
-            color: routeMode ? C.ink : C.gold,
-            border: `1px solid ${routeMode ? C.gold : C.border}`,
-            fontSize: 15,
-            cursor: "pointer",
-            lineHeight: 1,
-          }}
-          title="Measure route"
-        >
-          📏
-        </button>
-        {[0, 1, 2, 3].map((p) => (
-          <button
-            key={p}
-            onClick={() => setMapFloor(p)}
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: floor === p ? C.gold : "transparent",
-              color: floor === p ? C.ink : C.textDim,
-              border: `1px solid ${floor === p ? C.gold : C.borderSoft}`,
-              fontSize: 13,
-              fontWeight: 700,
-              cursor: "pointer",
-              lineHeight: 1,
-              flexShrink: 0,
-            }}
-            title={`Floor ${p}`}
-          >
-            {p}
-          </button>
-        ))}
-        <button
-          onClick={toggleF2pMode}
-          style={{
-            height: 30,
-            padding: "0 9px",
-            borderRadius: 8,
-            background: f2pMode ? C.gold : "transparent",
-            color: f2pMode ? C.ink : C.textDim,
-            border: `1px solid ${f2pMode ? C.gold : C.borderSoft}`,
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-            lineHeight: 1,
-            flexShrink: 0,
-          }}
-          title="Highlight free-to-play area"
-        >
-          F2P
-        </button>
-        <button
-          onClick={() => setWorldMap(null)}
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: "50%",
-            background: C.panelSoft,
-            color: C.parch,
-            border: `1px solid ${C.border}`,
-            fontSize: 15,
-            cursor: "pointer",
-            lineHeight: 1,
-            flexShrink: 0,
-          }}
-        >
-          ✕
-        </button>
-      </div>
-      {routeMode && !routeModalOpen && (
-        <div
-          style={{
-            padding: "8px 14px",
-            fontSize: 13,
-            color: C.textDim,
-            borderBottom: `1px solid ${C.borderSoft}`,
-            background: C.panel,
-          }}
-        >
-          📏 Tap your start point, then your destination.
-        </div>
-      )}
-      {mapError ? (
-        <div style={{ padding: 30, textAlign: "center", color: C.textDim }}>
-          {mapError}
-        </div>
-      ) : (
-        <div ref={mapDivRef} style={{ flex: 1, background: "#000" }} />
-      )}
-
-      {/* Route advice modal */}
-      {routeResult && routeModalOpen && (
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: 1200,
-            maxHeight: "62%",
-            overflowY: "auto",
-            background: C.bg,
-            borderTop: `2px solid ${C.gold}`,
-            borderRadius: "16px 16px 0 0",
-            padding: "12px 14px 20px",
-            boxSizing: "border-box",
-            boxShadow: "0 -6px 24px rgba(0,0,0,.5)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 8,
-            }}
-          >
-            <div style={{ ...goldTitle, fontSize: 16, fontWeight: 700, flex: 1 }}>
-              📏 {routeResult.tiles} tiles
-            </div>
-            <button
-              onClick={toggleF2pMode}
-              style={{
-                height: 28,
-                padding: "0 9px",
-                borderRadius: 8,
-                background: f2pMode ? C.gold : "transparent",
-                color: f2pMode ? C.ink : C.textDim,
-                border: `1px solid ${f2pMode ? C.gold : C.borderSoft}`,
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: "pointer",
-                lineHeight: 1,
-              }}
-            >
-              F2P only
-            </button>
-            <button
-              onClick={() => setRouteModalOpen(false)}
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: "50%",
-                background: C.panelSoft,
-                color: C.parch,
-                border: `1px solid ${C.border}`,
-                fontSize: 13,
-                cursor: "pointer",
-                lineHeight: 1,
-              }}
-            >
-              ✕
-            </button>
-          </div>
-
-          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
-            🚶 Walk ~{fmtSec(routeResult.tiles * 0.6)} · 🏃 Run ~
-            {fmtSec(runSecs(routeResult.tiles))}
-          </div>
-
-          {buildRouteOptions(routeResult.a, routeResult.b, f2pMode).map(
-            (opt, i) => (
-              <div
-                key={opt.name}
-                style={{
-                  ...card,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "9px 12px",
-                  marginBottom: 6,
-                  borderColor: i === 0 ? C.gold : C.borderSoft,
-                }}
-              >
-                <span style={{ fontSize: 17, flexShrink: 0 }}>{opt.icon}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 600,
-                      color: i === 0 ? C.gold : C.parch,
-                    }}
-                  >
-                    {opt.name}
-                    {!opt.f2p && !f2pMode && (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          color: C.textDim,
-                          marginLeft: 6,
-                          fontWeight: 400,
-                        }}
-                      >
-                        members
-                      </span>
-                    )}
-                    {i === 0 && (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          color: C.ink,
-                          background: C.gold,
-                          borderRadius: 5,
-                          padding: "1px 5px",
-                          marginLeft: 6,
-                          fontWeight: 700,
-                        }}
-                      >
-                        BEST
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 12, color: C.textDim }}>
-                    {opt.detail}
-                  </div>
-                </div>
-                <span
-                  style={{
-                    flexShrink: 0,
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: i === 0 ? C.gold : C.text,
-                  }}
-                >
-                  ~{fmtSec(opt.sec)}
-                </span>
-              </div>
-            )
-          )}
-
-          <div style={{ fontSize: 11, color: C.textDim, marginTop: 8 }}>
-            Straight-line estimates — walls, doors and stairs not included.
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
   // ── Home ──
   if (view === "home") {
     return (
       <div style={frame}>
         <div style={{ maxWidth: 560, margin: "0 auto", padding: "20px 14px 40px" }}>
-          <div style={{ textAlign: "center", marginBottom: 18 }}>
-            <div style={{ ...goldTitle, fontSize: 26, fontWeight: 700 }}>
-              ⚔️ Quest Helper
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 18 }}>
+            <Nav />
+            <div style={{ flex: 1, textAlign: "center" }}>
+              <div style={{ ...goldTitle, fontSize: 26, fontWeight: 700 }}>
+                ⚔️ Quest Helper
+              </div>
+              <div style={{ color: C.textDim, fontSize: 13, marginTop: 2 }}>
+                OSRS Wiki quick guides, right next to your game
+              </div>
             </div>
-            <div style={{ color: C.textDim, fontSize: 13, marginTop: 2 }}>
-              OSRS Wiki quick guides, right next to your game
-            </div>
+            <div style={{ width: 34, flexShrink: 0 }} />
           </div>
 
           <input
@@ -2081,22 +929,18 @@ export default function QuestHelper() {
             )}
           </div>
 
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button
-              onClick={() =>
-                setWorldMap({ x: 3222, y: 3218, title: "Gielinor", marker: false })
-              }
-              style={{ ...ghostBtn, flex: 1, color: C.gold, borderColor: C.border }}
-            >
-              🗺️ World map
-            </button>
-            <button
-              onClick={() => setProfileOpen(true)}
-              style={{ ...ghostBtn, flex: 1, color: C.gold, borderColor: C.border }}
-            >
-              👤 Profile
-            </button>
-          </div>
+          <Link
+            href="/map"
+            style={{
+              ...ghostBtn,
+              marginTop: 12,
+              color: C.gold,
+              borderColor: C.border,
+              textDecoration: "none",
+            }}
+          >
+            🗺️ World map
+          </Link>
 
           {nextQuest && (
             <div
@@ -2255,7 +1099,8 @@ export default function QuestHelper() {
             {editMode && (
               <div style={{ fontSize: 12, color: C.gold, marginBottom: 8 }}>
                 Tap quests you've already completed to mark them ✓ — tap again to
-                undo. Press Done when finished.
+                undo. Press Done when finished. Rewards (QP + XP) are looked up
+                from the wiki automatically.
               </div>
             )}
             <div
@@ -2282,8 +1127,6 @@ export default function QuestHelper() {
             {questListGroup("Miniquests", miniQuests)}
           </div>
         </div>
-        {profileOverlay}
-        {worldMapOverlay}
       </div>
     );
   }
@@ -2330,9 +1173,7 @@ export default function QuestHelper() {
               </div>
             )}
           </div>
-          <button onClick={() => setProfileOpen(true)} style={headBtn}>
-            👤
-          </button>
+          <Nav />
         </div>
         {quest && phase === "steps" && (
           <div
@@ -2417,7 +1258,7 @@ export default function QuestHelper() {
                 <div
                   onClick={() => {
                     if (quest.meta.startCoords) {
-                      setWorldMap({
+                      goToMap({
                         x: quest.meta.startCoords.x,
                         y: quest.meta.startCoords.y,
                         title: "Start point",
@@ -3016,7 +1857,7 @@ export default function QuestHelper() {
                   const c = lookup.coords;
                   const title = lookup.title;
                   setLookup(null);
-                  setWorldMap(
+                  goToMap(
                     c
                       ? {
                           x: c.x,
@@ -3119,7 +1960,7 @@ export default function QuestHelper() {
                       textDecoration: isPast ? "line-through" : "none",
                     }}
                   >
-                    {(st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text).replace(/[\u0001\u0002]/g, "")}
+                    {(st.text.length > 90 ? st.text.slice(0, 90) + "…" : st.text).replace(/[]/g, "")}
                   </span>
                 </button>
               );
@@ -3151,9 +1992,6 @@ export default function QuestHelper() {
             ))}
           </>
         ))}
-
-      {profileOverlay}
-      {worldMapOverlay}
     </div>
   );
 }
