@@ -8,6 +8,7 @@ import { C } from "@/lib/theme";
 const LINKS: { href: string; label: string; icon: string }[] = [
   { href: "/", label: "Quests", icon: "⚔️" },
   { href: "/map", label: "World map", icon: "🗺️" },
+  { href: "/prices", label: "GE Prices", icon: "💰" },
   { href: "/profile", label: "Profile", icon: "👤" },
 ];
 
