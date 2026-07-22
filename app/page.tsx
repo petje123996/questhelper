@@ -3,10 +3,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
-// Wizard-versie: eerst items afvinken, daarna elke stap in een
-// eigen scherm. Volledige questlijst van de wiki op de startpagina.
+// Flow: quest-info & vereisten → items afvinken → stappen-wizard.
+// RSN-koppeling checkt skill-vereisten via de officiële hiscores.
 
 const API = "https://oldschool.runescape.wiki/api.php";
+const WIKI = "https://oldschool.runescape.wiki";
 
 const C = {
   bg: "#26211A",
@@ -35,10 +36,28 @@ const POPULAR = [
   "Client of Kourend", "X Marks the Spot", "A Porcine of Interest",
 ];
 
-type Step = { text: string; info: string[]; section: string };
+const SKILLS = new Set([
+  "attack", "strength", "defence", "ranged", "prayer", "magic",
+  "runecraft", "runecrafting", "hitpoints", "crafting", "mining",
+  "smithing", "fishing", "cooking", "firemaking", "woodcutting",
+  "agility", "herblore", "thieving", "fletching", "slayer",
+  "farming", "construction", "hunter",
+]);
+
+type SkillReq = { level: number; skill: string; note: string };
+type Meta = {
+  difficulty: string | null;
+  length: string | null;
+  start: string | null;
+  skillReqs: SkillReq[];
+  otherReqs: string[];
+  enemies: string[];
+};
+type Step = { text: string; info: string[]; images: string[]; section: string };
 type Item = { name: string; info: string | null };
-type Quest = { name: string; steps: Step[]; items: Item[] };
+type Quest = { name: string; steps: Step[]; items: Item[]; meta: Meta };
 type RecentItem = { name: string; done: number; total: number };
+type Player = { name: string; skills: Record<string, number> };
 
 function cleanText(s: string): string {
   return s
@@ -46,6 +65,11 @@ function cleanText(s: string): string {
     .replace(/\s+/g, " ")
     .replace(/\s+([,.;:!?])/g, "$1")
     .trim();
+}
+
+function normalizeSkill(s: string): string {
+  const t = s.toLowerCase().trim();
+  return t === "runecrafting" ? "runecraft" : t;
 }
 
 // Splitst "Bucket of milk (can be bought at...)" in naam + extra info
@@ -59,7 +83,7 @@ function splitItem(raw: string): Item {
 
 // Haalt lange (tussen haakjes) teksten uit een stap en zet ze apart.
 // Korte haakjes zoals "(north)" blijven in de zin staan.
-function splitStep(raw: string, section: string): Step {
+function splitStep(raw: string, section: string, images: string[]): Step {
   const infos: string[] = [];
   const stripped = raw.replace(/\s*\(([^()]+)\)/g, (match, inner) => {
     const t = cleanText(inner);
@@ -69,7 +93,7 @@ function splitStep(raw: string, section: string): Step {
     }
     return match;
   });
-  return { text: cleanText(stripped), info: infos, section };
+  return { text: cleanText(stripped), info: infos, images, section };
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -105,8 +129,20 @@ function removeStored(key: string): void {
 
 const storageKey = (name: string) => "qh-quest-" + name.replace(/[\s/\\'"]+/g, "_");
 
-// Zet wiki-HTML om naar een platte stappenlijst + benodigde items
-function parseGuide(html: string): { steps: Step[]; items: Item[] } {
+// Eigen tekst van elk li-element, zonder geneste lijsten
+function ownLiTexts(container: Element): string[] {
+  const out: string[] = [];
+  container.querySelectorAll("li").forEach((li) => {
+    const clone = li.cloneNode(true) as Element;
+    clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
+    const t = cleanText(clone.textContent || "");
+    if (t) out.push(t);
+  });
+  return out;
+}
+
+// Zet wiki-HTML om naar stappen + items + quest-info
+function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const root = doc.body;
 
@@ -117,14 +153,51 @@ function parseGuide(html: string): { steps: Step[]; items: Item[] } {
     .forEach((el) => el.remove());
 
   const items: Item[] = [];
+  const meta: Meta = {
+    difficulty: null,
+    length: null,
+    start: null,
+    skillReqs: [],
+    otherReqs: [],
+    enemies: [],
+  };
+
   const details = root.querySelector("table.questdetails");
   if (details) {
     details.querySelectorAll("tr").forEach((tr) => {
       const th = tr.querySelector("th");
-      if (th && /item/i.test(th.textContent || "")) {
-        tr.querySelectorAll("li").forEach((li) => {
-          const t = cleanText(li.textContent || "");
-          if (t) items.push(splitItem(t));
+      const td = tr.querySelector("td");
+      if (!th || !td) return;
+      const label = (th.textContent || "").toLowerCase();
+
+      if (/item/.test(label)) {
+        ownLiTexts(td).forEach((t) => items.push(splitItem(t)));
+      } else if (/difficulty/.test(label)) {
+        meta.difficulty = cleanText(td.textContent || "") || null;
+      } else if (/length/.test(label)) {
+        meta.length = cleanText(td.textContent || "") || null;
+      } else if (/start/.test(label)) {
+        meta.start = cleanText(td.textContent || "") || null;
+      } else if (/enem|defeat/.test(label)) {
+        const lis = ownLiTexts(td);
+        meta.enemies = lis.length
+          ? lis
+          : cleanText(td.textContent || "")
+          ? [cleanText(td.textContent || "")]
+          : [];
+      } else if (/requirement/.test(label)) {
+        ownLiTexts(td).forEach((t) => {
+          if (t.endsWith(":")) return; // kopregels zoals "Completion of..."
+          const m = t.match(/^(\d+)\s+([A-Za-z]+)(.*)$/);
+          if (m && SKILLS.has(m[2].toLowerCase())) {
+            meta.skillReqs.push({
+              level: parseInt(m[1], 10),
+              skill: m[2],
+              note: cleanText(m[3] || ""),
+            });
+          } else {
+            meta.otherReqs.push(t);
+          }
         });
       }
     });
@@ -141,8 +214,22 @@ function parseGuide(html: string): { steps: Step[]; items: Item[] } {
       if (li.tagName !== "LI") return;
       const clone = li.cloneNode(true) as Element;
       clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
+
+      // Afbeeldingen (kaartjes e.d.) bij deze stap; kleine icoontjes overslaan
+      const images: string[] = [];
+      clone.querySelectorAll("img").forEach((img) => {
+        if (images.length >= 2) return;
+        const w = parseInt(img.getAttribute("width") || "0", 10);
+        if (w < 80) return;
+        let src = img.getAttribute("src") || "";
+        if (!src) return;
+        if (src.startsWith("//")) src = "https:" + src;
+        else if (src.startsWith("/")) src = WIKI + src;
+        images.push(src);
+      });
+
       const t = cleanText(clone.textContent || "");
-      if (t) steps.push(splitStep(t, sectionTitle));
+      if (t) steps.push(splitStep(t, sectionTitle, images));
       li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => pushLis(sub));
     });
   };
@@ -166,12 +253,12 @@ function parseGuide(html: string): { steps: Step[]; items: Item[] } {
   };
   walk(root);
 
-  return { steps, items };
+  return { steps, items, meta };
 }
 
 export default function QuestHelper() {
   const [view, setView] = useState<"home" | "quest">("home");
-  const [phase, setPhase] = useState<"items" | "steps" | "done">("items");
+  const [phase, setPhase] = useState<"info" | "items" | "steps" | "done">("info");
   const [query, setQuery] = useState("");
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
@@ -183,17 +270,26 @@ export default function QuestHelper() {
   const [stepInfoOpen, setStepInfoOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rsn, setRsn] = useState("");
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
     if (Array.isArray(r)) {
-      // Voltooide quests (ook uit oudere versies) uit de lijst filteren
       const active = r.filter(
         (x: RecentItem) => x && x.total > 0 && x.done < x.total
       );
       setRecent(active);
       if (active.length !== r.length) saveStored("qh-recent", active);
+    }
+
+    const savedPlayer = loadStored("qh-rsn");
+    if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
+      setPlayer(savedPlayer);
+      setRsn(savedPlayer.name);
     }
 
     // Volledige questlijst van de wiki (max 1x per week verversen)
@@ -266,6 +362,36 @@ export default function QuestHelper() {
     return () => clearTimeout(debounceRef.current);
   }, [query, allQuests]);
 
+  const loadStats = async () => {
+    const name = rsn.trim();
+    if (!name) return;
+    setStatsLoading(true);
+    setStatsError(null);
+    try {
+      const res = await fetch(`/api/hiscores?player=${encodeURIComponent(name)}`);
+      const data = await res.json();
+      if (!res.ok || !Array.isArray(data.skills)) {
+        throw new Error(data.error || "Speler niet gevonden");
+      }
+      const skills: Record<string, number> = {};
+      data.skills.forEach((s: any) => {
+        if (s && s.name) skills[normalizeSkill(String(s.name))] = Number(s.level) || 1;
+      });
+      const p: Player = { name, skills };
+      setPlayer(p);
+      saveStored("qh-rsn", p);
+    } catch (e: any) {
+      setStatsError(e?.message || "Stats laden mislukt");
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const checkReq = (req: SkillReq): boolean | null => {
+    if (!player) return null;
+    return (player.skills[normalizeSkill(req.skill)] ?? 1) >= req.level;
+  };
+
   const updateRecent = useCallback(
     (name: string, done: number, total: number) => {
       setRecent((prev) => {
@@ -335,17 +461,17 @@ export default function QuestHelper() {
       const q: Quest = { name: displayName, ...parsed };
 
       const saved = loadStored(storageKey(displayName));
-      let p: "items" | "steps" = "items";
+      let p: "info" | "items" | "steps" = "info";
       let step = 0;
       let items = new Set<number>();
       if (saved && saved.phase !== "done") {
         if (saved.phase === "steps") p = "steps";
+        else if (saved.phase === "items") p = "items";
         step = Math.min(saved.step || 0, q.steps.length - 1);
         items = new Set<number>(
           (saved.items || []).filter((i: number) => i < q.items.length)
         );
       }
-      if (!q.items.length) p = "steps";
 
       setQuest(q);
       setPhase(p);
@@ -357,6 +483,13 @@ export default function QuestHelper() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const afterInfo = () => {
+    if (!quest) return;
+    const p = quest.items.length ? "items" : "steps";
+    setPhase(p);
+    persist(quest.name, p, stepIdx, itemsChecked);
   };
 
   const toggleItem = (i: number) => {
@@ -385,7 +518,6 @@ export default function QuestHelper() {
     if (!quest) return;
     setStepInfoOpen(false);
     if (stepIdx >= quest.steps.length - 1) {
-      // Quest voltooid
       setPhase("done");
       removeFromRecent(quest.name);
       removeStored(storageKey(quest.name));
@@ -411,6 +543,11 @@ export default function QuestHelper() {
   const step = quest && phase === "steps" ? quest.steps[stepIdx] : null;
   const isLast = quest ? stepIdx === total - 1 : false;
   const recentNames = new Set(recent.map((r) => r.name));
+  const hasReqs = quest
+    ? quest.meta.skillReqs.length > 0 ||
+      quest.meta.otherReqs.length > 0 ||
+      quest.meta.enemies.length > 0
+    : false;
 
   // ── Stijlen ──
   const frame: React.CSSProperties = {
@@ -455,6 +592,14 @@ export default function QuestHelper() {
     border: `1px solid ${C.borderSoft}`,
     borderRadius: 12,
     cursor: "pointer",
+  };
+  const chip: React.CSSProperties = {
+    padding: "6px 12px",
+    background: C.panelSoft,
+    border: `1px solid ${C.border}`,
+    borderRadius: 20,
+    fontSize: 13,
+    color: C.parch,
   };
 
   // ── Home ──
@@ -601,6 +746,66 @@ export default function QuestHelper() {
             </div>
           )}
 
+          {/* RSN / stats */}
+          <div style={{ marginTop: 26 }}>
+            <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
+              👤 Jouw stats
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={rsn}
+                onChange={(e) => setRsn(e.target.value)}
+                placeholder="RuneScape-naam…"
+                maxLength={12}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  boxSizing: "border-box",
+                  padding: "11px 14px",
+                  fontSize: 15,
+                  background: C.panelSoft,
+                  color: C.parch,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  outline: "none",
+                }}
+              />
+              <button
+                onClick={loadStats}
+                disabled={statsLoading || !rsn.trim()}
+                style={{
+                  flexShrink: 0,
+                  padding: "11px 16px",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  background: C.gold,
+                  color: C.ink,
+                  border: "none",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                  opacity: statsLoading || !rsn.trim() ? 0.5 : 1,
+                }}
+              >
+                {statsLoading ? "…" : player ? "Ververs" : "Laden"}
+              </button>
+            </div>
+            {player && !statsError && (
+              <div style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
+                ✓ Stats geladen voor {player.name}
+              </div>
+            )}
+            {statsError && (
+              <div style={{ fontSize: 13, color: C.red, marginTop: 6 }}>
+                {statsError}
+              </div>
+            )}
+            {!player && !statsError && (
+              <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
+                Met je stats zie je per quest of je de skill-vereisten haalt.
+              </div>
+            )}
+          </div>
+
           <div style={{ marginTop: 26 }}>
             <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
               Alle quests
@@ -612,15 +817,7 @@ export default function QuestHelper() {
                   <button
                     key={n}
                     onClick={() => openQuest(n)}
-                    style={{
-                      padding: "9px 13px",
-                      background: C.panelSoft,
-                      color: C.parch,
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 20,
-                      fontSize: 13,
-                      cursor: "pointer",
-                    }}
+                    style={{ ...chip, padding: "9px 13px", cursor: "pointer" }}
                   >
                     {n}
                   </button>
@@ -671,6 +868,9 @@ export default function QuestHelper() {
             >
               {quest ? quest.name : "Laden…"}
             </div>
+            {quest && phase === "info" && (
+              <div style={{ fontSize: 12, color: C.textDim }}>Quest-info</div>
+            )}
             {quest && phase === "steps" && (
               <div style={{ fontSize: 12, color: C.textDim }}>
                 Stap {stepIdx + 1} van {total} · {pct}%
@@ -682,6 +882,22 @@ export default function QuestHelper() {
               </div>
             )}
           </div>
+          {quest && phase !== "info" && phase !== "done" && (
+            <button
+              onClick={() => setPhase("info")}
+              style={{
+                background: "transparent",
+                border: `1px solid ${C.borderSoft}`,
+                color: C.gold,
+                borderRadius: 8,
+                padding: "7px 10px",
+                fontSize: 15,
+                cursor: "pointer",
+              }}
+            >
+              ℹ️
+            </button>
+          )}
           {quest && phase === "steps" && quest.items.length > 0 && (
             <button
               onClick={() => setPhase("items")}
@@ -761,6 +977,120 @@ export default function QuestHelper() {
               </button>
             </div>
           </div>
+        )}
+
+        {/* Fase 0: quest-info & vereisten */}
+        {quest && phase === "info" && (
+          <>
+            <div style={{ flex: 1 }}>
+              {(quest.meta.difficulty || quest.meta.length) && (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  {quest.meta.difficulty && (
+                    <span style={chip}>🏁 {quest.meta.difficulty}</span>
+                  )}
+                  {quest.meta.length && (
+                    <span style={chip}>⏱️ {quest.meta.length}</span>
+                  )}
+                </div>
+              )}
+
+              {quest.meta.start && (
+                <div style={{ ...card, padding: "11px 14px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, marginBottom: 3 }}>
+                    📍 STARTPUNT
+                  </div>
+                  <div style={{ fontSize: 14, color: C.parch }}>{quest.meta.start}</div>
+                </div>
+              )}
+
+              <div style={{ ...goldTitle, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
+                Vereisten
+              </div>
+
+              {!hasReqs && (
+                <div style={{ color: C.textDim, fontSize: 14 }}>
+                  Geen vereisten — je kunt meteen beginnen! 🎉
+                </div>
+              )}
+
+              {quest.meta.skillReqs.map((req, i) => {
+                const ok = checkReq(req);
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      ...card,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "10px 14px",
+                      marginBottom: 6,
+                      borderColor:
+                        ok === true ? C.green : ok === false ? C.red : C.borderSoft,
+                    }}
+                  >
+                    <span style={{ fontSize: 15 }}>
+                      {ok === true ? "✅" : ok === false ? "❌" : "▫️"}
+                    </span>
+                    <span style={{ color: C.parch, fontSize: 15, flex: 1 }}>
+                      Level {req.level} {req.skill}
+                      {req.note && (
+                        <span style={{ color: C.textDim, fontSize: 13 }}> {req.note}</span>
+                      )}
+                    </span>
+                    {player && (
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: ok ? C.green : C.red,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {player.skills[normalizeSkill(req.skill)] ?? 1}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+
+              {quest.meta.skillReqs.length > 0 && !player && (
+                <div style={{ fontSize: 12, color: C.textDim, margin: "4px 0 10px" }}>
+                  Tip: vul je RSN in op de startpagina, dan check ik je levels automatisch.
+                </div>
+              )}
+
+              {quest.meta.otherReqs.map((t, i) => (
+                <div
+                  key={i}
+                  style={{
+                    ...card,
+                    padding: "10px 14px",
+                    marginBottom: 6,
+                    fontSize: 14,
+                    color: C.text,
+                  }}
+                >
+                  📜 {t}
+                </div>
+              ))}
+
+              {quest.meta.enemies.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ ...goldTitle, fontSize: 14, fontWeight: 700, marginBottom: 6 }}>
+                    ⚔️ Te verslaan
+                  </div>
+                  {quest.meta.enemies.map((e, i) => (
+                    <div key={i} style={{ fontSize: 14, color: C.text, padding: "2px 0" }}>
+                      • {e}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button onClick={afterInfo} style={{ ...bigBtn, marginTop: 16 }}>
+              {quest.items.length ? "Naar benodigde items →" : "Start quest →"}
+            </button>
+          </>
         )}
 
         {/* Fase 1: items afvinken */}
@@ -932,6 +1262,22 @@ export default function QuestHelper() {
                     </button>
                   )}
                 </span>
+                {step.images.map((src) => (
+                  <img
+                    key={src}
+                    src={src}
+                    alt=""
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: 260,
+                      objectFit: "contain",
+                      borderRadius: 10,
+                      marginTop: 14,
+                      border: `1px solid ${C.goldDim}`,
+                      alignSelf: "center",
+                    }}
+                  />
+                ))}
                 {stepInfoOpen && step.info.length > 0 && (
                   <div
                     style={{
