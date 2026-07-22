@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Wizard-versie: eerst items afvinken, daarna elke stap in een
-// eigen scherm. Voltooide quests verdwijnen uit de lijst.
+// eigen scherm. Lange (tussen haakjes) teksten achter een i-knop.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 
@@ -35,7 +35,7 @@ const POPULAR = [
   "Client of Kourend", "X Marks the Spot", "A Porcine of Interest",
 ];
 
-type Step = { text: string; section: string };
+type Step = { text: string; info: string[]; section: string };
 type Item = { name: string; info: string | null };
 type Quest = { name: string; steps: Step[]; items: Item[] };
 type RecentItem = { name: string; done: number; total: number };
@@ -51,6 +51,21 @@ function splitItem(raw: string): Item {
     return { name: cleanText(m[1]), info: cleanText(m[2]) };
   }
   return { name: cleanText(raw), info: null };
+}
+
+// Haalt lange (tussen haakjes) teksten uit een stap en zet ze apart.
+// Korte haakjes zoals "(north)" blijven in de zin staan.
+function splitStep(raw: string, section: string): Step {
+  const infos: string[] = [];
+  const stripped = raw.replace(/\s*\(([^()]+)\)/g, (match, inner) => {
+    const t = cleanText(inner);
+    if (t.length >= 12) {
+      infos.push(t);
+      return "";
+    }
+    return match;
+  });
+  return { text: cleanText(stripped), info: infos, section };
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -123,7 +138,7 @@ function parseGuide(html: string): { steps: Step[]; items: Item[] } {
       const clone = li.cloneNode(true) as Element;
       clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
       const t = cleanText(clone.textContent || "");
-      if (t) steps.push({ text: t, section: sectionTitle });
+      if (t) steps.push(splitStep(t, sectionTitle));
       li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => pushLis(sub));
     });
   };
@@ -160,13 +175,21 @@ export default function QuestHelper() {
   const [stepIdx, setStepIdx] = useState(0);
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
   const [openInfo, setOpenInfo] = useState<number | null>(null);
+  const [stepInfoOpen, setStepInfoOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
-    if (r) setRecent(r);
+    if (Array.isArray(r)) {
+      // Voltooide quests (ook uit oudere versies) uit de lijst filteren
+      const active = r.filter(
+        (x: RecentItem) => x && x.total > 0 && x.done < x.total
+      );
+      setRecent(active);
+      if (active.length !== r.length) saveStored("qh-recent", active);
+    }
   }, []);
 
   // Wiki-zoeksuggesties + lokale lijst
@@ -220,6 +243,11 @@ export default function QuestHelper() {
     });
   }, []);
 
+  const deleteRecent = (name: string) => {
+    removeFromRecent(name);
+    removeStored(storageKey(name));
+  };
+
   const persist = (
     name: string,
     p: string,
@@ -239,6 +267,7 @@ export default function QuestHelper() {
     setView("quest");
     setQuest(null);
     setOpenInfo(null);
+    setStepInfoOpen(false);
     try {
       let data = await fetchJson(
         `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
@@ -302,12 +331,14 @@ export default function QuestHelper() {
   const startSteps = () => {
     if (!quest) return;
     setPhase("steps");
+    setStepInfoOpen(false);
     persist(quest.name, "steps", stepIdx, itemsChecked);
     updateRecent(quest.name, stepIdx, quest.steps.length);
   };
 
   const nextStep = () => {
     if (!quest) return;
+    setStepInfoOpen(false);
     if (stepIdx >= quest.steps.length - 1) {
       // Quest voltooid
       setPhase("done");
@@ -323,6 +354,7 @@ export default function QuestHelper() {
 
   const prevStep = () => {
     if (!quest || stepIdx === 0) return;
+    setStepInfoOpen(false);
     const n = stepIdx - 1;
     setStepIdx(n);
     persist(quest.name, "steps", n, itemsChecked);
@@ -446,23 +478,59 @@ export default function QuestHelper() {
               {recent.map((r) => {
                 const p = r.total ? Math.round((r.done / r.total) * 100) : 0;
                 return (
-                  <button
+                  <div
                     key={r.name}
                     onClick={() => openQuest(r.name)}
                     style={{
                       ...card,
-                      display: "block",
-                      width: "100%",
-                      textAlign: "left",
                       padding: "12px 14px",
                       marginBottom: 8,
                       cursor: "pointer",
                       color: C.text,
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ color: C.parch, fontWeight: 600 }}>{r.name}</span>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: C.parch,
+                          fontWeight: 600,
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {r.name}
+                      </span>
                       <span style={{ color: C.gold, fontSize: 13 }}>{p}%</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteRecent(r.name);
+                        }}
+                        style={{
+                          flexShrink: 0,
+                          width: 28,
+                          height: 28,
+                          borderRadius: "50%",
+                          background: "transparent",
+                          color: C.textDim,
+                          border: `1px solid ${C.borderSoft}`,
+                          fontSize: 13,
+                          cursor: "pointer",
+                          lineHeight: 1,
+                        }}
+                      >
+                        ✕
+                      </button>
                     </div>
                     <div
                       style={{
@@ -481,7 +549,7 @@ export default function QuestHelper() {
                         }}
                       />
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -763,15 +831,43 @@ export default function QuestHelper() {
             <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
               <div
                 style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  letterSpacing: 1.2,
-                  textTransform: "uppercase",
-                  color: C.goldDim,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   marginBottom: 10,
                 }}
               >
-                {step.section}
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: 1.2,
+                    textTransform: "uppercase",
+                    color: C.goldDim,
+                  }}
+                >
+                  {step.section}
+                </div>
+                {step.info.length > 0 && (
+                  <button
+                    onClick={() => setStepInfoOpen(!stepInfoOpen)}
+                    style={{
+                      flexShrink: 0,
+                      width: 32,
+                      height: 32,
+                      borderRadius: "50%",
+                      background: stepInfoOpen ? C.gold : "transparent",
+                      color: stepInfoOpen ? C.ink : C.gold,
+                      border: `1px solid ${stepInfoOpen ? C.gold : C.goldDim}`,
+                      fontSize: 15,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      fontFamily: "Georgia, serif",
+                    }}
+                  >
+                    i
+                  </button>
+                )}
               </div>
               <div
                 style={{
@@ -784,11 +880,30 @@ export default function QuestHelper() {
                   fontSize: 18,
                   lineHeight: 1.55,
                   display: "flex",
-                  alignItems: "center",
+                  flexDirection: "column",
+                  justifyContent: "center",
                   boxShadow: "0 4px 16px rgba(0,0,0,.4)",
+                  overflowY: "auto",
                 }}
               >
                 <span>{step.text}</span>
+                {stepInfoOpen && step.info.length > 0 && (
+                  <div
+                    style={{
+                      marginTop: 16,
+                      paddingTop: 14,
+                      borderTop: `1px dashed ${C.goldDim}`,
+                      fontSize: 14,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {step.info.map((inf, i) => (
+                      <div key={i} style={{ padding: "3px 0" }}>
+                        ℹ️ {inf}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             <div style={{ marginTop: 16 }}>
