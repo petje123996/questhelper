@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest info & requirements → item checklist → step wizard.
-// World map: Leaflet + official wiki tiles, NPC markers.
+// World map: Leaflet + official wiki tiles, NPC & start markers.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -46,10 +46,12 @@ const SKILLS = new Set([
 ]);
 
 type SkillReq = { level: number; skill: string; note: string };
+type Coords = { x: number; y: number };
 type Meta = {
   difficulty: string | null;
   length: string | null;
   start: string | null;
+  startCoords: Coords | null;
   skillReqs: SkillReq[];
   otherReqs: string[];
   enemies: string[];
@@ -67,7 +69,6 @@ type Quest = { name: string; steps: Step[]; items: Item[]; meta: Meta };
 type RecentItem = { name: string; done: number; total: number };
 type Player = { name: string; skills: Record<string, number> };
 type GalleryImg = { src: string; caption: string };
-type Coords = { x: number; y: number };
 type Lookup = {
   title: string;
   page: string;
@@ -122,7 +123,7 @@ function wikiUrl(page: string): string {
   return WIKI + "/w/" + encodeURIComponent(page.replace(/ /g, "_"));
 }
 
-// Extract game coordinates from wiki page HTML (embedded maps)
+// Extract game coordinates from wiki HTML (embedded maps)
 function extractCoords(html: string): Coords | null {
   const valid = (x: number, y: number) =>
     x >= 1000 && x <= 13000 && y >= 1000 && y <= 13000 ? { x, y } : null;
@@ -301,6 +302,7 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
     difficulty: null,
     length: null,
     start: null,
+    startCoords: null,
     skillReqs: [],
     otherReqs: [],
     enemies: [],
@@ -321,7 +323,13 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
       } else if (/length/.test(label)) {
         meta.length = cleanText(td.textContent || "") || null;
       } else if (/start/.test(label)) {
-        meta.start = cleanText(td.textContent || "") || null;
+        // Coordinates come from the embedded "Show on map" link
+        meta.startCoords = extractCoords(td.outerHTML || "");
+        const tdClone = td.cloneNode(true) as Element;
+        tdClone.querySelectorAll("a").forEach((a) => {
+          if (/show on map/i.test(a.textContent || "")) a.remove();
+        });
+        meta.start = cleanText(tdClone.textContent || "") || null;
       } else if (/enem|defeat/.test(label)) {
         const lis = ownLiTexts(td);
         meta.enemies = lis.length
@@ -745,6 +753,17 @@ export default function QuestHelper() {
               const own = parseGallery(html);
               const seen = new Set(g.map((x) => x.src));
               setGallery([...g, ...own.filter((x) => !seen.has(x.src))]);
+              // Start coordinates are sometimes only on the full guide page
+              if (!parsed.meta.startCoords) {
+                const c = extractCoords(d2.parse.text["*"]);
+                if (c) {
+                  setQuest((prev) =>
+                    prev && prev.name === displayName
+                      ? { ...prev, meta: { ...prev.meta, startCoords: c } }
+                      : prev
+                  );
+                }
+              }
             }
           } catch {
             /* no gallery, no problem */
@@ -1120,11 +1139,70 @@ export default function QuestHelper() {
             </div>
           )}
 
+          {/* RSN / stats — right under the search bar */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={rsn}
+                onChange={(e) => setRsn(e.target.value)}
+                placeholder="RuneScape name…"
+                maxLength={12}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  boxSizing: "border-box",
+                  padding: "11px 14px",
+                  fontSize: 15,
+                  background: C.panelSoft,
+                  color: C.parch,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  outline: "none",
+                }}
+              />
+              <button
+                onClick={loadStats}
+                disabled={statsLoading || !rsn.trim()}
+                style={{
+                  flexShrink: 0,
+                  padding: "11px 16px",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  background: C.gold,
+                  color: C.ink,
+                  border: "none",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                  opacity: statsLoading || !rsn.trim() ? 0.5 : 1,
+                }}
+              >
+                {statsLoading ? "…" : player ? "Refresh" : "Load"}
+              </button>
+            </div>
+            {player && !statsError && (
+              <div style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
+                ✓ Stats loaded for {player.name}
+                {combatLevel !== null ? ` · Combat level ${combatLevel}` : ""}
+              </div>
+            )}
+            {statsError && (
+              <div style={{ fontSize: 13, color: C.red, marginTop: 6 }}>
+                {statsError}
+              </div>
+            )}
+            {!player && !statsError && (
+              <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
+                With your stats loaded you'll see whether you meet each quest's
+                skill requirements.
+              </div>
+            )}
+          </div>
+
           <button
             onClick={() =>
               setWorldMap({ x: 3222, y: 3218, title: "Gielinor", marker: false })
             }
-            style={{ ...ghostBtn, marginTop: 10, color: C.gold, borderColor: C.border }}
+            style={{ ...ghostBtn, marginTop: 12, color: C.gold, borderColor: C.border }}
           >
             🗺️ Open world map
           </button>
@@ -1213,68 +1291,6 @@ export default function QuestHelper() {
               })}
             </div>
           )}
-
-          {/* RSN / stats */}
-          <div style={{ marginTop: 26 }}>
-            <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-              👤 Your stats
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                value={rsn}
-                onChange={(e) => setRsn(e.target.value)}
-                placeholder="RuneScape name…"
-                maxLength={12}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  boxSizing: "border-box",
-                  padding: "11px 14px",
-                  fontSize: 15,
-                  background: C.panelSoft,
-                  color: C.parch,
-                  border: `1px solid ${C.border}`,
-                  borderRadius: 10,
-                  outline: "none",
-                }}
-              />
-              <button
-                onClick={loadStats}
-                disabled={statsLoading || !rsn.trim()}
-                style={{
-                  flexShrink: 0,
-                  padding: "11px 16px",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  background: C.gold,
-                  color: C.ink,
-                  border: "none",
-                  borderRadius: 10,
-                  cursor: "pointer",
-                  opacity: statsLoading || !rsn.trim() ? 0.5 : 1,
-                }}
-              >
-                {statsLoading ? "…" : player ? "Refresh" : "Load"}
-              </button>
-            </div>
-            {player && !statsError && (
-              <div style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
-                ✓ Stats loaded for {player.name}
-                {combatLevel !== null ? ` · Combat level ${combatLevel}` : ""}
-              </div>
-            )}
-            {statsError && (
-              <div style={{ fontSize: 13, color: C.red, marginTop: 6 }}>
-                {statsError}
-              </div>
-            )}
-            {!player && !statsError && (
-              <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
-                With your stats loaded you'll see whether you meet each quest's
-                skill requirements.
-              </div>
-            )}
-          </div>
 
           <div style={{ marginTop: 26 }}>
             <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
@@ -1449,9 +1465,41 @@ export default function QuestHelper() {
               )}
 
               {quest.meta.start && (
-                <div style={{ ...card, padding: "11px 14px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, marginBottom: 3 }}>
-                    📍 START POINT
+                <div
+                  onClick={() => {
+                    if (quest.meta.startCoords) {
+                      setWorldMap({
+                        x: quest.meta.startCoords.x,
+                        y: quest.meta.startCoords.y,
+                        title: "Start point",
+                        marker: true,
+                      });
+                    }
+                  }}
+                  style={{
+                    ...card,
+                    padding: "11px 14px",
+                    marginBottom: 14,
+                    cursor: quest.meta.startCoords ? "pointer" : "default",
+                    borderColor: quest.meta.startCoords ? C.gold : C.borderSoft,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 3,
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: C.goldDim, fontWeight: 700 }}>
+                      📍 START POINT
+                    </span>
+                    {quest.meta.startCoords && (
+                      <span style={{ fontSize: 12, color: C.gold, fontWeight: 600 }}>
+                        🗺️ Show on map
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: 14, color: C.parch }}>{quest.meta.start}</div>
                 </div>
