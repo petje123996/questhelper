@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
-// Haalt quick guides live van de OSRS Wiki, afvinkbare stappen,
-// voortgang wordt bewaard in localStorage.
+// Wizard-versie: eerst items afvinken, daarna elke stap in een
+// eigen scherm. Voltooide quests verdwijnen uit de lijst.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 
@@ -13,9 +13,9 @@ const C = {
   panel: "#332C22",
   panelSoft: "#3B342A",
   border: "#57492F",
+  goldDim: "#B08A3E",
   borderSoft: "#463C2C",
   gold: "#E7B84C",
-  goldDim: "#B08A3E",
   parch: "#E9DDBE",
   ink: "#3A2E19",
   text: "#D8CDB4",
@@ -35,13 +35,22 @@ const POPULAR = [
   "Client of Kourend", "X Marks the Spot", "A Porcine of Interest",
 ];
 
-type Step = { text: string; depth: number; idx: number };
-type Section = { title: string; steps: Step[] };
-type Quest = { name: string; sections: Section[]; items: string[]; total: number };
+type Step = { text: string; section: string };
+type Item = { name: string; info: string | null };
+type Quest = { name: string; steps: Step[]; items: Item[] };
 type RecentItem = { name: string; done: number; total: number };
 
 function cleanText(s: string): string {
   return s.replace(/\[\d+\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Splitst "Bucket of milk (can be bought at...)" in naam + extra info
+function splitItem(raw: string): Item {
+  const m = raw.match(/^(.*?)\s*\((.+)\)\s*$/);
+  if (m && m[1].trim()) {
+    return { name: cleanText(m[1]), info: cleanText(m[2]) };
+  }
+  return { name: cleanText(raw), info: null };
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -67,10 +76,18 @@ function saveStored(key: string, val: any): void {
   }
 }
 
+function removeStored(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* opslag niet beschikbaar */
+  }
+}
+
 const storageKey = (name: string) => "qh-quest-" + name.replace(/[\s/\\'"]+/g, "_");
 
-// Zet wiki-HTML om naar secties met stappen + benodigde items
-function parseGuide(html: string): { sections: Section[]; items: string[]; total: number } {
+// Zet wiki-HTML om naar een platte stappenlijst + benodigde items
+function parseGuide(html: string): { steps: Step[]; items: Item[] } {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const root = doc.body;
 
@@ -80,7 +97,7 @@ function parseGuide(html: string): { sections: Section[]; items: string[]; total
     )
     .forEach((el) => el.remove());
 
-  const items: string[] = [];
+  const items: Item[] = [];
   const details = root.querySelector("table.questdetails");
   if (details) {
     details.querySelectorAll("tr").forEach((tr) => {
@@ -88,7 +105,7 @@ function parseGuide(html: string): { sections: Section[]; items: string[]; total
       if (th && /item/i.test(th.textContent || "")) {
         tr.querySelectorAll("li").forEach((li) => {
           const t = cleanText(li.textContent || "");
-          if (t) items.push(t);
+          if (t) items.push(splitItem(t));
         });
       }
     });
@@ -96,23 +113,18 @@ function parseGuide(html: string): { sections: Section[]; items: string[]; total
   }
 
   const SKIP = /reference|navigat|see also|trivia|gallery|changes|reward/i;
-  const sections: Section[] = [];
-  let current: { title: string; steps: { text: string; depth: number }[] } = {
-    title: "Walkthrough",
-    steps: [],
-  };
+  const steps: Step[] = [];
+  let sectionTitle = "Walkthrough";
   let skipping = false;
 
-  const pushLis = (listEl: Element, depth: number) => {
+  const pushLis = (listEl: Element) => {
     Array.from(listEl.children).forEach((li) => {
       if (li.tagName !== "LI") return;
       const clone = li.cloneNode(true) as Element;
       clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
       const t = cleanText(clone.textContent || "");
-      if (t) current.steps.push({ text: t, depth });
-      li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) =>
-        pushLis(sub, depth + 1)
-      );
+      if (t) steps.push({ text: t, section: sectionTitle });
+      li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => pushLis(sub));
     });
   };
 
@@ -122,39 +134,35 @@ function parseGuide(html: string): { sections: Section[]; items: string[]; total
       if (tag === "H2" || tag === "H3") {
         const title = cleanText(child.textContent || "");
         skipping = SKIP.test(title);
-        if (!skipping) {
-          if (current.steps.length) sections.push(current as Section);
-          current = { title, steps: [] };
-        }
+        if (!skipping && title) sectionTitle = title;
         return;
       }
       if (skipping) return;
       if (tag === "UL" || tag === "OL") {
-        if (!child.closest("table")) pushLis(child, 0);
+        if (!child.closest("table")) pushLis(child);
         return;
       }
       if (tag === "DIV" || tag === "SECTION") walk(child);
     });
   };
   walk(root);
-  if (current.steps.length) sections.push(current as Section);
 
-  let idx = 0;
-  sections.forEach((s) => s.steps.forEach((st) => (st.idx = idx++)));
-  return { sections, items, total: idx };
+  return { steps, items };
 }
 
 export default function QuestHelper() {
   const [view, setView] = useState<"home" | "quest">("home");
+  const [phase, setPhase] = useState<"items" | "steps" | "done">("items");
   const [query, setQuery] = useState("");
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [quest, setQuest] = useState<Quest | null>(null);
-  const [checked, setChecked] = useState<Set<number>>(new Set());
+  const [stepIdx, setStepIdx] = useState(0);
+  const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
+  const [openInfo, setOpenInfo] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
-  const currentRef = useRef<any>(null);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
@@ -190,22 +198,47 @@ export default function QuestHelper() {
     return () => clearTimeout(debounceRef.current);
   }, [query]);
 
-  const saveRecent = useCallback((name: string, done: number, total: number) => {
+  const updateRecent = useCallback(
+    (name: string, done: number, total: number) => {
+      setRecent((prev) => {
+        const next = [
+          { name, done, total },
+          ...prev.filter((r) => r.name !== name),
+        ].slice(0, 8);
+        saveStored("qh-recent", next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const removeFromRecent = useCallback((name: string) => {
     setRecent((prev) => {
-      const next = [
-        { name, done, total },
-        ...prev.filter((r) => r.name !== name),
-      ].slice(0, 8);
+      const next = prev.filter((r) => r.name !== name);
       saveStored("qh-recent", next);
       return next;
     });
   }, []);
+
+  const persist = (
+    name: string,
+    p: string,
+    step: number,
+    items: Set<number>
+  ) => {
+    saveStored(storageKey(name), {
+      phase: p,
+      step,
+      items: Array.from(items),
+    });
+  };
 
   const openQuest = async (name: string) => {
     setLoading(true);
     setError(null);
     setView("quest");
     setQuest(null);
+    setOpenInfo(null);
     try {
       let data = await fetchJson(
         `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
@@ -221,16 +254,30 @@ export default function QuestHelper() {
       }
       if (data.error) throw new Error("Quest niet gevonden op de wiki.");
       const parsed = parseGuide(data.parse.text["*"]);
-      if (!parsed.total) {
+      if (!parsed.steps.length) {
         throw new Error("Geen stappen gevonden voor deze pagina.");
       }
       const displayName = String(data.parse.title).replace("/Quick guide", "");
+      const q: Quest = { name: displayName, ...parsed };
+
       const saved = loadStored(storageKey(displayName));
-      const savedChecked: number[] = saved?.checked || [];
-      const set = new Set(savedChecked.filter((i) => i < parsed.total));
-      setQuest({ name: displayName, ...parsed });
-      setChecked(set);
-      saveRecent(displayName, set.size, parsed.total);
+      let p: "items" | "steps" = "items";
+      let step = 0;
+      let items = new Set<number>();
+      if (saved && saved.phase !== "done") {
+        if (saved.phase === "steps") p = "steps";
+        step = Math.min(saved.step || 0, q.steps.length - 1);
+        items = new Set<number>(
+          (saved.items || []).filter((i: number) => i < q.items.length)
+        );
+      }
+      if (!q.items.length) p = "steps";
+
+      setQuest(q);
+      setPhase(p);
+      setStepIdx(step);
+      setItemsChecked(items);
+      updateRecent(displayName, p === "steps" ? step : 0, q.steps.length);
     } catch (e: any) {
       setError(e?.message || "Laden mislukt. Controleer je verbinding.");
     } finally {
@@ -238,49 +285,54 @@ export default function QuestHelper() {
     }
   };
 
-  const toggle = (i: number) => {
+  const toggleItem = (i: number) => {
     if (!quest) return;
-    setChecked((prev) => {
+    setItemsChecked((prev) => {
       const next = new Set(prev);
       if (next.has(i)) {
         next.delete(i);
       } else {
         next.add(i);
       }
-      saveStored(storageKey(quest.name), { checked: Array.from(next) });
-      saveRecent(quest.name, next.size, quest.total);
+      persist(quest.name, phase, stepIdx, next);
       return next;
     });
   };
 
-  const firstOpenIdx = (): number | null => {
-    if (!quest) return null;
-    for (let i = 0; i < quest.total; i++) {
-      if (!checked.has(i)) return i;
-    }
-    return null;
-  };
-  const firstOpen = firstOpenIdx();
-
-  const completeCurrent = () => {
-    if (firstOpen == null) return;
-    toggle(firstOpen);
-    setTimeout(() => {
-      if (currentRef.current) {
-        currentRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-    }, 120);
-  };
-
-  const resetQuest = () => {
+  const startSteps = () => {
     if (!quest) return;
-    setChecked(new Set());
-    saveStored(storageKey(quest.name), { checked: [] });
-    saveRecent(quest.name, 0, quest.total);
+    setPhase("steps");
+    persist(quest.name, "steps", stepIdx, itemsChecked);
+    updateRecent(quest.name, stepIdx, quest.steps.length);
   };
 
-  const done = checked.size;
-  const pct = quest && quest.total ? Math.round((done / quest.total) * 100) : 0;
+  const nextStep = () => {
+    if (!quest) return;
+    if (stepIdx >= quest.steps.length - 1) {
+      // Quest voltooid
+      setPhase("done");
+      removeFromRecent(quest.name);
+      removeStored(storageKey(quest.name));
+      return;
+    }
+    const n = stepIdx + 1;
+    setStepIdx(n);
+    persist(quest.name, "steps", n, itemsChecked);
+    updateRecent(quest.name, n, quest.steps.length);
+  };
+
+  const prevStep = () => {
+    if (!quest || stepIdx === 0) return;
+    const n = stepIdx - 1;
+    setStepIdx(n);
+    persist(quest.name, "steps", n, itemsChecked);
+    updateRecent(quest.name, n, quest.steps.length);
+  };
+
+  const total = quest ? quest.steps.length : 0;
+  const pct = total ? Math.round((stepIdx / total) * 100) : 0;
+  const step = quest && phase === "steps" ? quest.steps[stepIdx] : null;
+  const isLast = quest ? stepIdx === total - 1 : false;
 
   // ── Stijlen ──
   const frame: React.CSSProperties = {
@@ -300,6 +352,31 @@ export default function QuestHelper() {
     background: C.panel,
     border: `1px solid ${C.borderSoft}`,
     borderRadius: 10,
+  };
+  const bigBtn: React.CSSProperties = {
+    display: "block",
+    width: "100%",
+    padding: "15px",
+    fontSize: 17,
+    fontWeight: 700,
+    background: C.gold,
+    color: C.ink,
+    border: "none",
+    borderRadius: 12,
+    cursor: "pointer",
+    boxShadow: "0 4px 14px rgba(0,0,0,.45)",
+  };
+  const ghostBtn: React.CSSProperties = {
+    display: "block",
+    width: "100%",
+    padding: "13px",
+    fontSize: 15,
+    fontWeight: 600,
+    background: "transparent",
+    color: C.textDim,
+    border: `1px solid ${C.borderSoft}`,
+    borderRadius: 12,
+    cursor: "pointer",
   };
 
   // ── Home ──
@@ -385,14 +462,7 @@ export default function QuestHelper() {
                   >
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <span style={{ color: C.parch, fontWeight: 600 }}>{r.name}</span>
-                      <span
-                        style={{
-                          color: p === 100 ? C.green : C.gold,
-                          fontSize: 13,
-                        }}
-                      >
-                        {p === 100 ? "Voltooid ✓" : p + "%"}
-                      </span>
+                      <span style={{ color: C.gold, fontSize: 13 }}>{p}%</span>
                     </div>
                     <div
                       style={{
@@ -407,7 +477,7 @@ export default function QuestHelper() {
                         style={{
                           width: p + "%",
                           height: "100%",
-                          background: p === 100 ? C.green : C.gold,
+                          background: C.gold,
                         }}
                       />
                     </div>
@@ -450,12 +520,10 @@ export default function QuestHelper() {
 
   // ── Quest-weergave ──
   return (
-    <div style={frame}>
+    <div style={{ ...frame, display: "flex", flexDirection: "column" }}>
+      {/* Kopregel */}
       <div
         style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 5,
           background: C.bg,
           borderBottom: `2px solid ${C.border}`,
           padding: "10px 14px",
@@ -489,30 +557,35 @@ export default function QuestHelper() {
             >
               {quest ? quest.name : "Laden…"}
             </div>
-            {quest && (
+            {quest && phase === "steps" && (
               <div style={{ fontSize: 12, color: C.textDim }}>
-                {done}/{quest.total} stappen · {pct}%
+                Stap {stepIdx + 1} van {total} · {pct}%
+              </div>
+            )}
+            {quest && phase === "items" && (
+              <div style={{ fontSize: 12, color: C.textDim }}>
+                Benodigde items · {itemsChecked.size}/{quest.items.length}
               </div>
             )}
           </div>
-          {quest && (
+          {quest && phase === "steps" && quest.items.length > 0 && (
             <button
-              onClick={resetQuest}
+              onClick={() => setPhase("items")}
               style={{
                 background: "transparent",
                 border: `1px solid ${C.borderSoft}`,
-                color: C.textDim,
+                color: C.gold,
                 borderRadius: 8,
                 padding: "7px 10px",
-                fontSize: 12,
+                fontSize: 15,
                 cursor: "pointer",
               }}
             >
-              Reset
+              🎒
             </button>
           )}
         </div>
-        {quest && (
+        {quest && phase === "steps" && (
           <div
             style={{
               height: 5,
@@ -526,7 +599,7 @@ export default function QuestHelper() {
               style={{
                 width: pct + "%",
                 height: "100%",
-                background: pct === 100 ? C.green : C.gold,
+                background: C.gold,
                 transition: "width .3s",
               }}
             />
@@ -534,7 +607,18 @@ export default function QuestHelper() {
         )}
       </div>
 
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "14px 14px 110px" }}>
+      <div
+        style={{
+          flex: 1,
+          maxWidth: 560,
+          width: "100%",
+          margin: "0 auto",
+          padding: "16px 14px 30px",
+          boxSizing: "border-box",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         {loading && (
           <div style={{ textAlign: "center", padding: 40, color: C.textDim }}>
             Quick guide ophalen van de wiki…
@@ -565,139 +649,208 @@ export default function QuestHelper() {
           </div>
         )}
 
-        {quest && quest.items.length > 0 && (
-          <div style={{ ...card, padding: "12px 14px", marginBottom: 14 }}>
-            <div style={{ ...goldTitle, fontSize: 14, marginBottom: 6 }}>
-              🎒 Benodigde items
+        {/* Fase 1: items afvinken */}
+        {quest && phase === "items" && (
+          <>
+            <div style={{ ...goldTitle, fontSize: 16, fontWeight: 700, marginBottom: 10 }}>
+              🎒 Verzamel deze items
             </div>
-            {quest.items.map((it, i) => (
-              <div key={i} style={{ fontSize: 14, padding: "3px 0", color: C.text }}>
-                • {it}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {quest &&
-          quest.sections.map((sec) => (
-            <div key={sec.title} style={{ marginBottom: 18 }}>
-              <div
-                style={{
-                  ...goldTitle,
-                  fontSize: 15,
-                  fontWeight: 700,
-                  margin: "4px 2px 8px",
-                }}
-              >
-                {sec.title}
-              </div>
-              {sec.steps.map((st) => {
-                const isDone = checked.has(st.idx);
-                const isCurrent = st.idx === firstOpen;
+            <div style={{ flex: 1 }}>
+              {quest.items.map((it, i) => {
+                const isDone = itemsChecked.has(i);
+                const infoOpen = openInfo === i;
                 return (
-                  <button
-                    key={st.idx}
-                    ref={isCurrent ? currentRef : null}
-                    onClick={() => toggle(st.idx)}
-                    style={{
-                      display: "flex",
-                      gap: 12,
-                      alignItems: "flex-start",
-                      width: "100%",
-                      textAlign: "left",
-                      boxSizing: "border-box",
-                      padding: "12px 14px",
-                      marginBottom: 6,
-                      marginLeft: st.depth * 14,
-                      maxWidth: `calc(100% - ${st.depth * 14}px)`,
-                      borderRadius: 10,
-                      cursor: "pointer",
-                      background: isCurrent ? C.parch : isDone ? C.panel : C.panelSoft,
-                      color: isCurrent ? C.ink : isDone ? C.textDim : C.parch,
-                      border: isCurrent
-                        ? `2px solid ${C.gold}`
-                        : `1px solid ${C.borderSoft}`,
-                      textDecoration: isDone ? "line-through" : "none",
-                      fontSize: 15,
-                    }}
-                  >
-                    <span
+                  <div key={i} style={{ marginBottom: 6 }}>
+                    <div
                       style={{
-                        flexShrink: 0,
-                        width: 22,
-                        height: 22,
-                        marginTop: 1,
-                        borderRadius: 6,
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: 14,
-                        background: isDone ? C.green : "transparent",
-                        color: isDone ? C.bg : "transparent",
-                        border: isDone
-                          ? `1px solid ${C.green}`
-                          : `2px solid ${isCurrent ? C.goldDim : C.border}`,
+                        gap: 10,
+                        background: isDone ? C.panel : C.panelSoft,
+                        border: `1px solid ${C.borderSoft}`,
+                        borderRadius: 10,
+                        padding: "4px 6px 4px 4px",
                       }}
                     >
-                      ✓
-                    </span>
-                    <span>{st.text}</span>
-                  </button>
+                      <button
+                        onClick={() => toggleItem(i)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          flex: 1,
+                          minWidth: 0,
+                          textAlign: "left",
+                          background: "transparent",
+                          border: "none",
+                          padding: "9px 6px",
+                          cursor: "pointer",
+                          color: isDone ? C.textDim : C.parch,
+                          textDecoration: isDone ? "line-through" : "none",
+                          fontSize: 15,
+                        }}
+                      >
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            width: 22,
+                            height: 22,
+                            borderRadius: 6,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 14,
+                            background: isDone ? C.green : "transparent",
+                            color: isDone ? C.bg : "transparent",
+                            border: isDone
+                              ? `1px solid ${C.green}`
+                              : `2px solid ${C.border}`,
+                          }}
+                        >
+                          ✓
+                        </span>
+                        <span>{it.name}</span>
+                      </button>
+                      {it.info && (
+                        <button
+                          onClick={() => setOpenInfo(infoOpen ? null : i)}
+                          style={{
+                            flexShrink: 0,
+                            width: 30,
+                            height: 30,
+                            borderRadius: "50%",
+                            background: infoOpen ? C.gold : "transparent",
+                            color: infoOpen ? C.ink : C.gold,
+                            border: `1px solid ${infoOpen ? C.gold : C.goldDim}`,
+                            fontSize: 14,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            fontFamily: "Georgia, serif",
+                          }}
+                        >
+                          i
+                        </button>
+                      )}
+                    </div>
+                    {it.info && infoOpen && (
+                      <div
+                        style={{
+                          margin: "4px 0 8px 36px",
+                          padding: "9px 12px",
+                          background: C.panel,
+                          border: `1px solid ${C.goldDim}`,
+                          borderRadius: 8,
+                          fontSize: 13,
+                          color: C.text,
+                        }}
+                      >
+                        {it.info}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </div>
-          ))}
+            <button onClick={startSteps} style={{ ...bigBtn, marginTop: 16 }}>
+              Start quest →
+            </button>
+          </>
+        )}
 
-        {quest && pct === 100 && (
+        {/* Fase 2: stappen-wizard, elke stap eigen scherm */}
+        {quest && phase === "steps" && step && (
+          <>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: 1.2,
+                  textTransform: "uppercase",
+                  color: C.goldDim,
+                  marginBottom: 10,
+                }}
+              >
+                {step.section}
+              </div>
+              <div
+                style={{
+                  flex: 1,
+                  background: C.parch,
+                  color: C.ink,
+                  border: `2px solid ${C.gold}`,
+                  borderRadius: 14,
+                  padding: "22px 18px",
+                  fontSize: 18,
+                  lineHeight: 1.55,
+                  display: "flex",
+                  alignItems: "center",
+                  boxShadow: "0 4px 16px rgba(0,0,0,.4)",
+                }}
+              >
+                <span>{step.text}</span>
+              </div>
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <button
+                onClick={nextStep}
+                style={{
+                  ...bigBtn,
+                  background: isLast ? C.green : C.gold,
+                }}
+              >
+                {isLast ? "Quest voltooid 🏆" : "Volgende ✓"}
+              </button>
+              <button
+                onClick={prevStep}
+                disabled={stepIdx === 0}
+                style={{
+                  ...ghostBtn,
+                  marginTop: 8,
+                  opacity: stepIdx === 0 ? 0.35 : 1,
+                }}
+              >
+                ← Vorige
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Fase 3: voltooid */}
+        {quest && phase === "done" && (
           <div
             style={{
-              ...card,
-              borderColor: C.green,
-              padding: 18,
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
               textAlign: "center",
-              color: C.green,
-              fontWeight: 700,
-              fontSize: 17,
             }}
           >
-            🏆 Quest voltooid!
+            <div style={{ fontSize: 60 }}>🏆</div>
+            <div
+              style={{
+                ...goldTitle,
+                fontSize: 24,
+                fontWeight: 700,
+                marginTop: 10,
+              }}
+            >
+              Quest voltooid!
+            </div>
+            <div style={{ color: C.textDim, marginTop: 6 }}>
+              {quest.name} is afgerond en uit je lijst gehaald.
+            </div>
+            <button
+              onClick={() => setView("home")}
+              style={{ ...bigBtn, marginTop: 26, maxWidth: 300 }}
+            >
+              Terug naar start
+            </button>
           </div>
         )}
       </div>
-
-      {quest && firstOpen != null && !loading && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            padding: "10px 14px 16px",
-            background: `linear-gradient(transparent, ${C.bg} 35%)`,
-          }}
-        >
-          <button
-            onClick={completeCurrent}
-            style={{
-              display: "block",
-              width: "100%",
-              maxWidth: 560,
-              margin: "0 auto",
-              padding: "15px",
-              fontSize: 17,
-              fontWeight: 700,
-              background: C.gold,
-              color: C.ink,
-              border: "none",
-              borderRadius: 12,
-              cursor: "pointer",
-              boxShadow: "0 4px 14px rgba(0,0,0,.45)",
-            }}
-          >
-            Stap klaar ✓
-          </button>
-        </div>
-      )}
     </div>
   );
 }
