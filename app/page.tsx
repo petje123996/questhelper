@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Flow: quest-info & vereisten → items afvinken → stappen-wizard.
-// Hiscores: skill-check per vereiste + combat-check per monster.
+// Extra: galerij uit de volledige gids + tikbare NPC/locatie-chips.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 const WIKI = "https://oldschool.runescape.wiki";
@@ -53,11 +53,26 @@ type Meta = {
   otherReqs: string[];
   enemies: string[];
 };
-type Step = { text: string; info: string[]; images: string[]; section: string };
+type LinkRef = { label: string; page: string };
+type Step = {
+  text: string;
+  info: string[];
+  images: string[];
+  links: LinkRef[];
+  section: string;
+};
 type Item = { name: string; info: string | null };
 type Quest = { name: string; steps: Step[]; items: Item[]; meta: Meta };
 type RecentItem = { name: string; done: number; total: number };
 type Player = { name: string; skills: Record<string, number> };
+type GalleryImg = { src: string; caption: string };
+type Lookup = {
+  title: string;
+  page: string;
+  loading: boolean;
+  images: string[];
+  error: string | null;
+};
 
 function cleanText(s: string): string {
   return s
@@ -70,6 +85,16 @@ function cleanText(s: string): string {
 function normalizeSkill(s: string): string {
   const t = s.toLowerCase().trim();
   return t === "runecrafting" ? "runecraft" : t;
+}
+
+function resolveSrc(raw: string): string {
+  if (raw.startsWith("//")) return "https:" + raw;
+  if (raw.startsWith("/")) return WIKI + raw;
+  return raw;
+}
+
+function wikiUrl(page: string): string {
+  return WIKI + "/w/" + encodeURIComponent(page.replace(/ /g, "_"));
 }
 
 // Officiële OSRS combat level formule
@@ -96,21 +121,6 @@ function splitItem(raw: string): Item {
     return { name: cleanText(m[1]), info: cleanText(m[2]) };
   }
   return { name: cleanText(raw), info: null };
-}
-
-// Haalt lange (tussen haakjes) teksten uit een stap en zet ze apart.
-// Korte haakjes zoals "(north)" blijven in de zin staan.
-function splitStep(raw: string, section: string, images: string[]): Step {
-  const infos: string[] = [];
-  const stripped = raw.replace(/\s*\(([^()]+)\)/g, (match, inner) => {
-    const t = cleanText(inner);
-    if (t.length >= 12) {
-      infos.push(t);
-      return "";
-    }
-    return match;
-  });
-  return { text: cleanText(stripped), info: infos, images, section };
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -156,6 +166,76 @@ function ownLiTexts(container: Element): string[] {
     if (t) out.push(t);
   });
   return out;
+}
+
+// Afbeeldingen met bijschrift uit een volledige gids-pagina
+function parseGallery(html: string): GalleryImg[] {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const out: GalleryImg[] = [];
+  const seen = new Set<string>();
+  doc.querySelectorAll("figure, div.thumb").forEach((fig) => {
+    const img = fig.querySelector("img");
+    if (!img) return;
+    const w = parseInt(img.getAttribute("width") || "0", 10);
+    if (w < 100) return;
+    const src = resolveSrc(img.getAttribute("src") || "");
+    if (!src || seen.has(src)) return;
+    seen.add(src);
+    const capEl = fig.querySelector("figcaption, .thumbcaption");
+    const caption = cleanText(capEl?.textContent || "");
+    out.push({ src, caption });
+  });
+  return out.slice(0, 30);
+}
+
+// Splitst een stap in tekst + info + afbeeldingen + links
+function makeStep(
+  li: Element,
+  section: string
+): Step | null {
+  const clone = li.cloneNode(true) as Element;
+  clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
+
+  // Afbeeldingen in de stap zelf; kleine icoontjes overslaan
+  const images: string[] = [];
+  clone.querySelectorAll("img").forEach((img) => {
+    if (images.length >= 2) return;
+    const w = parseInt(img.getAttribute("width") || "0", 10);
+    if (w < 80) return;
+    const src = resolveSrc(img.getAttribute("src") || "");
+    if (src) images.push(src);
+  });
+
+  // Gelinkte NPC's, locaties en items in deze stap
+  const links: LinkRef[] = [];
+  clone.querySelectorAll("a").forEach((a) => {
+    if (links.length >= 4) return;
+    const href = a.getAttribute("href") || "";
+    if (!href.startsWith("/w/")) return;
+    if (a.querySelector("img")) return;
+    const page = decodeURIComponent(href.slice(3))
+      .split("#")[0]
+      .replace(/_/g, " ");
+    const label = cleanText(a.textContent || "");
+    if (!label || label.length < 3 || !page) return;
+    if (links.some((l) => l.page === page)) return;
+    links.push({ label, page });
+  });
+
+  const raw = cleanText(clone.textContent || "");
+  if (!raw) return null;
+
+  const infos: string[] = [];
+  const stripped = raw.replace(/\s*\(([^()]+)\)/g, (match, inner) => {
+    const t = cleanText(inner);
+    if (t.length >= 12) {
+      infos.push(t);
+      return "";
+    }
+    return match;
+  });
+
+  return { text: cleanText(stripped), info: infos, images, links, section };
 }
 
 // Zet wiki-HTML om naar stappen + items + quest-info
@@ -229,24 +309,8 @@ function parseGuide(html: string): { steps: Step[]; items: Item[]; meta: Meta } 
   const pushLis = (listEl: Element) => {
     Array.from(listEl.children).forEach((li) => {
       if (li.tagName !== "LI") return;
-      const clone = li.cloneNode(true) as Element;
-      clone.querySelectorAll("ul, ol").forEach((n) => n.remove());
-
-      // Afbeeldingen (kaartjes e.d.) bij deze stap; kleine icoontjes overslaan
-      const images: string[] = [];
-      clone.querySelectorAll("img").forEach((img) => {
-        if (images.length >= 2) return;
-        const w = parseInt(img.getAttribute("width") || "0", 10);
-        if (w < 80) return;
-        let src = img.getAttribute("src") || "";
-        if (!src) return;
-        if (src.startsWith("//")) src = "https:" + src;
-        else if (src.startsWith("/")) src = WIKI + src;
-        images.push(src);
-      });
-
-      const t = cleanText(clone.textContent || "");
-      if (t) steps.push(splitStep(t, sectionTitle, images));
+      const st = makeStep(li, sectionTitle);
+      if (st) steps.push(st);
       li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => pushLis(sub));
     });
   };
@@ -286,6 +350,9 @@ export default function QuestHelper() {
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
   const [openInfo, setOpenInfo] = useState<number | null>(null);
   const [stepInfoOpen, setStepInfoOpen] = useState(false);
+  const [gallery, setGallery] = useState<GalleryImg[]>([]);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [lookup, setLookup] = useState<Lookup | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rsn, setRsn] = useState("");
@@ -495,7 +562,11 @@ export default function QuestHelper() {
     setQuest(null);
     setOpenInfo(null);
     setStepInfoOpen(false);
+    setGallery([]);
+    setGalleryOpen(false);
+    setLookup(null);
     try {
+      let usedMainPage = false;
       let data = await fetchJson(
         `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
           name + "/Quick guide"
@@ -507,9 +578,11 @@ export default function QuestHelper() {
             name
           )}`
         );
+        usedMainPage = true;
       }
       if (data.error) throw new Error("Quest niet gevonden op de wiki.");
-      const parsed = parseGuide(data.parse.text["*"]);
+      const html = data.parse.text["*"];
+      const parsed = parseGuide(html);
       if (!parsed.steps.length) {
         throw new Error("Geen stappen gevonden voor deze pagina.");
       }
@@ -534,10 +607,70 @@ export default function QuestHelper() {
       setStepIdx(step);
       setItemsChecked(items);
       updateRecent(displayName, p === "steps" ? step : 0, q.steps.length);
+
+      // Galerij uit de volledige gids op de achtergrond laden
+      if (usedMainPage) {
+        setGallery(parseGallery(html));
+      } else {
+        (async () => {
+          try {
+            const d2 = await fetchJson(
+              `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
+                displayName
+              )}`
+            );
+            if (!d2.error) {
+              const g = parseGallery(d2.parse.text["*"]);
+              const own = parseGallery(html);
+              const seen = new Set(g.map((x) => x.src));
+              setGallery([...g, ...own.filter((x) => !seen.has(x.src))]);
+            }
+          } catch {
+            /* geen galerij, geen ramp */
+          }
+        })();
+      }
     } catch (e: any) {
       setError(e?.message || "Laden mislukt. Controleer je verbinding.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Zoekt afbeeldingen (bij voorkeur locatiekaartjes) van een wiki-pagina
+  const lookupPage = async (page: string, label: string) => {
+    setLookup({ title: label, page, loading: true, images: [], error: null });
+    try {
+      const data = await fetchJson(
+        `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
+          page
+        )}`
+      );
+      if (data.error) throw new Error("Pagina niet gevonden");
+      const doc = new DOMParser().parseFromString(data.parse.text["*"], "text/html");
+      const found: { src: string; isMap: boolean }[] = [];
+      const seen = new Set<string>();
+      doc.querySelectorAll("img").forEach((img) => {
+        const w = parseInt(img.getAttribute("width") || "0", 10);
+        if (w < 100) return;
+        const src = resolveSrc(img.getAttribute("src") || "");
+        if (!src || seen.has(src)) return;
+        seen.add(src);
+        found.push({ src, isMap: /location|map/i.test(src) });
+      });
+      found.sort((a, b) => Number(b.isMap) - Number(a.isMap));
+      const images = found.slice(0, 3).map((f) => f.src);
+      setLookup({
+        title: label,
+        page,
+        loading: false,
+        images,
+        error: images.length ? null : "Geen afbeeldingen gevonden op deze pagina.",
+      });
+    } catch {
+      setLookup((prev) =>
+        prev ? { ...prev, loading: false, error: "Laden mislukt." } : null
+      );
     }
   };
 
@@ -658,6 +791,74 @@ export default function QuestHelper() {
     fontSize: 13,
     color: C.parch,
   };
+  const headBtn: React.CSSProperties = {
+    background: "transparent",
+    border: `1px solid ${C.borderSoft}`,
+    color: C.gold,
+    borderRadius: 8,
+    padding: "7px 10px",
+    fontSize: 15,
+    cursor: "pointer",
+  };
+
+  // ── Overlay (galerij / opzoeken) ──
+  const overlay = (title: string, onClose: () => void, children: React.ReactNode) => (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,.7)",
+        zIndex: 50,
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%",
+          maxWidth: 560,
+          maxHeight: "82vh",
+          overflowY: "auto",
+          background: C.bg,
+          borderTop: `2px solid ${C.gold}`,
+          borderRadius: "16px 16px 0 0",
+          padding: "14px 14px 24px",
+          boxSizing: "border-box",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 12,
+          }}
+        >
+          <div style={{ ...goldTitle, fontSize: 17, fontWeight: 700 }}>{title}</div>
+          <button
+            onClick={onClose}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: "50%",
+              background: C.panelSoft,
+              color: C.parch,
+              border: `1px solid ${C.border}`,
+              fontSize: 14,
+              cursor: "pointer",
+              lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
 
   // ── Home ──
   if (view === "home") {
@@ -910,18 +1111,7 @@ export default function QuestHelper() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button
-            onClick={() => setView("home")}
-            style={{
-              background: C.panelSoft,
-              border: `1px solid ${C.border}`,
-              color: C.gold,
-              borderRadius: 8,
-              padding: "7px 12px",
-              fontSize: 15,
-              cursor: "pointer",
-            }}
-          >
+          <button onClick={() => setView("home")} style={headBtn}>
             ←
           </button>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -951,35 +1141,18 @@ export default function QuestHelper() {
               </div>
             )}
           </div>
+          {quest && gallery.length > 0 && phase !== "done" && (
+            <button onClick={() => setGalleryOpen(true)} style={headBtn}>
+              🖼️
+            </button>
+          )}
           {quest && phase !== "info" && phase !== "done" && (
-            <button
-              onClick={() => setPhase("info")}
-              style={{
-                background: "transparent",
-                border: `1px solid ${C.borderSoft}`,
-                color: C.gold,
-                borderRadius: 8,
-                padding: "7px 10px",
-                fontSize: 15,
-                cursor: "pointer",
-              }}
-            >
+            <button onClick={() => setPhase("info")} style={headBtn}>
               ℹ️
             </button>
           )}
           {quest && phase === "steps" && quest.items.length > 0 && (
-            <button
-              onClick={() => setPhase("items")}
-              style={{
-                background: "transparent",
-                border: `1px solid ${C.borderSoft}`,
-                color: C.gold,
-                borderRadius: 8,
-                padding: "7px 10px",
-                fontSize: 15,
-                cursor: "pointer",
-              }}
-            >
+            <button onClick={() => setPhase("items")} style={headBtn}>
               🎒
             </button>
           )}
@@ -1457,6 +1630,37 @@ export default function QuestHelper() {
                     </button>
                   )}
                 </span>
+
+                {step.links.length > 0 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 6,
+                      marginTop: 14,
+                    }}
+                  >
+                    {step.links.map((l) => (
+                      <button
+                        key={l.page}
+                        onClick={() => lookupPage(l.page, l.label)}
+                        style={{
+                          padding: "6px 11px",
+                          background: "rgba(58,46,25,.08)",
+                          color: C.ink,
+                          border: `1.5px solid rgba(58,46,25,.45)`,
+                          borderRadius: 16,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        🔍 {l.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {step.images.map((src) => (
                   <img
                     key={src}
@@ -1552,6 +1756,80 @@ export default function QuestHelper() {
           </div>
         )}
       </div>
+
+      {/* Overlay: NPC/locatie opzoeken */}
+      {lookup &&
+        overlay(`🔍 ${lookup.title}`, () => setLookup(null), (
+          <>
+            {lookup.loading && (
+              <div style={{ color: C.textDim, padding: "20px 0", textAlign: "center" }}>
+                Zoeken op de wiki…
+              </div>
+            )}
+            {lookup.error && !lookup.loading && (
+              <div style={{ color: C.textDim, fontSize: 14, marginBottom: 12 }}>
+                {lookup.error}
+              </div>
+            )}
+            {lookup.images.map((src) => (
+              <img
+                key={src}
+                src={src}
+                alt=""
+                style={{
+                  width: "100%",
+                  borderRadius: 10,
+                  marginBottom: 10,
+                  border: `1px solid ${C.borderSoft}`,
+                }}
+              />
+            ))}
+            <a
+              href={wikiUrl(lookup.page)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                textAlign: "center",
+                padding: "12px",
+                background: C.panelSoft,
+                color: C.gold,
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                textDecoration: "none",
+                fontWeight: 600,
+                fontSize: 14,
+              }}
+            >
+              Open op wiki ↗
+            </a>
+          </>
+        ))}
+
+      {/* Overlay: galerij uit de volledige gids */}
+      {galleryOpen &&
+        overlay("🖼️ Kaarten & afbeeldingen", () => setGalleryOpen(false), (
+          <>
+            {gallery.map((g) => (
+              <div key={g.src} style={{ marginBottom: 16 }}>
+                <img
+                  src={g.src}
+                  alt=""
+                  style={{
+                    width: "100%",
+                    borderRadius: 10,
+                    border: `1px solid ${C.borderSoft}`,
+                  }}
+                />
+                {g.caption && (
+                  <div style={{ fontSize: 13, color: C.textDim, marginTop: 4 }}>
+                    {g.caption}
+                  </div>
+                )}
+              </div>
+            ))}
+          </>
+        ))}
     </div>
   );
 }
