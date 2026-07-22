@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── OSRS Quest Helper ───────────────────────────────────────────
 // Wizard-versie: eerst items afvinken, daarna elke stap in een
-// eigen scherm. Lange (tussen haakjes) teksten achter een i-knop.
+// eigen scherm. Volledige questlijst van de wiki op de startpagina.
 
 const API = "https://oldschool.runescape.wiki/api.php";
 
@@ -41,7 +41,11 @@ type Quest = { name: string; steps: Step[]; items: Item[] };
 type RecentItem = { name: string; done: number; total: number };
 
 function cleanText(s: string): string {
-  return s.replace(/\[\d+\]/g, "").replace(/\s+/g, " ").trim();
+  return s
+    .replace(/\[\d+\]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .trim();
 }
 
 // Splitst "Bucket of milk (can be bought at...)" in naam + extra info
@@ -171,6 +175,7 @@ export default function QuestHelper() {
   const [query, setQuery] = useState("");
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
+  const [allQuests, setAllQuests] = useState<string[]>(POPULAR);
   const [quest, setQuest] = useState<Quest | null>(null);
   const [stepIdx, setStepIdx] = useState(0);
   const [itemsChecked, setItemsChecked] = useState<Set<number>>(new Set());
@@ -190,6 +195,46 @@ export default function QuestHelper() {
       setRecent(active);
       if (active.length !== r.length) saveStored("qh-recent", active);
     }
+
+    // Volledige questlijst van de wiki (max 1x per week verversen)
+    const cached = loadStored("qh-questlist");
+    if (cached && Array.isArray(cached.names) && cached.names.length > 0) {
+      setAllQuests(cached.names);
+      if (Date.now() - (cached.ts || 0) < 7 * 24 * 60 * 60 * 1000) return;
+    }
+    (async () => {
+      try {
+        const names: string[] = [];
+        let cont: string | null = null;
+        for (let i = 0; i < 3; i++) {
+          const url =
+            `${API}?action=query&format=json&origin=*&list=categorymembers` +
+            `&cmtitle=Category%3AQuests&cmtype=page&cmlimit=500` +
+            (cont ? `&cmcontinue=${encodeURIComponent(cont)}` : "");
+          const data: any = await fetchJson(url);
+          (data.query?.categorymembers || []).forEach((m: any) => {
+            const t = String(m.title || "");
+            if (
+              t &&
+              !t.includes("/") &&
+              !t.includes(":") &&
+              !/^(Quests|Quest points|Quest List)$/i.test(t)
+            ) {
+              names.push(t);
+            }
+          });
+          cont = data.continue?.cmcontinue || null;
+          if (!cont) break;
+        }
+        if (names.length > 10) {
+          names.sort((a, b) => a.localeCompare(b));
+          setAllQuests(names);
+          saveStored("qh-questlist", { ts: Date.now(), names });
+        }
+      } catch {
+        /* POPULAR blijft als fallback */
+      }
+    })();
   }, []);
 
   // Wiki-zoeksuggesties + lokale lijst
@@ -199,7 +244,7 @@ export default function QuestHelper() {
       setSuggest([]);
       return;
     }
-    const local = POPULAR.filter((n) => n.toLowerCase().includes(q));
+    const local = allQuests.filter((n) => n.toLowerCase().includes(q));
     setSuggest(local.slice(0, 8));
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
@@ -219,7 +264,7 @@ export default function QuestHelper() {
       }
     }, 350);
     return () => clearTimeout(debounceRef.current);
-  }, [query]);
+  }, [query, allQuests]);
 
   const updateRecent = useCallback(
     (name: string, done: number, total: number) => {
@@ -365,6 +410,7 @@ export default function QuestHelper() {
   const pct = total ? Math.round((stepIdx / total) * 100) : 0;
   const step = quest && phase === "steps" ? quest.steps[stepIdx] : null;
   const isLast = quest ? stepIdx === total - 1 : false;
+  const recentNames = new Set(recent.map((r) => r.name));
 
   // ── Stijlen ──
   const frame: React.CSSProperties = {
@@ -555,13 +601,14 @@ export default function QuestHelper() {
             </div>
           )}
 
-          {recent.length === 0 && !query && (
-            <div style={{ marginTop: 26 }}>
-              <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-                Populaire quests
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {POPULAR.slice(0, 12).map((n) => (
+          <div style={{ marginTop: 26 }}>
+            <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
+              Alle quests
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {allQuests
+                .filter((n) => !recentNames.has(n))
+                .map((n) => (
                   <button
                     key={n}
                     onClick={() => openQuest(n)}
@@ -578,9 +625,8 @@ export default function QuestHelper() {
                     {n}
                   </button>
                 ))}
-              </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
     );
@@ -831,43 +877,15 @@ export default function QuestHelper() {
             <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
               <div
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: 1.2,
+                  textTransform: "uppercase",
+                  color: C.goldDim,
                   marginBottom: 10,
                 }}
               >
-                <div
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 700,
-                    letterSpacing: 1.2,
-                    textTransform: "uppercase",
-                    color: C.goldDim,
-                  }}
-                >
-                  {step.section}
-                </div>
-                {step.info.length > 0 && (
-                  <button
-                    onClick={() => setStepInfoOpen(!stepInfoOpen)}
-                    style={{
-                      flexShrink: 0,
-                      width: 32,
-                      height: 32,
-                      borderRadius: "50%",
-                      background: stepInfoOpen ? C.gold : "transparent",
-                      color: stepInfoOpen ? C.ink : C.gold,
-                      border: `1px solid ${stepInfoOpen ? C.gold : C.goldDim}`,
-                      fontSize: 15,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      fontFamily: "Georgia, serif",
-                    }}
-                  >
-                    i
-                  </button>
-                )}
+                {step.section}
               </div>
               <div
                 style={{
@@ -886,7 +904,34 @@ export default function QuestHelper() {
                   overflowY: "auto",
                 }}
               >
-                <span>{step.text}</span>
+                <span>
+                  {step.text}
+                  {step.info.length > 0 && (
+                    <button
+                      onClick={() => setStepInfoOpen(!stepInfoOpen)}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        verticalAlign: "middle",
+                        marginLeft: 10,
+                        width: 28,
+                        height: 28,
+                        borderRadius: "50%",
+                        background: stepInfoOpen ? C.ink : "transparent",
+                        color: stepInfoOpen ? C.parch : C.ink,
+                        border: `2px solid ${C.ink}`,
+                        fontSize: 14,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        fontFamily: "Georgia, serif",
+                        lineHeight: 1,
+                      }}
+                    >
+                      i
+                    </button>
+                  )}
+                </span>
                 {stepInfoOpen && step.info.length > 0 && (
                   <div
                     style={{
