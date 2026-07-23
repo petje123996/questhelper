@@ -7,7 +7,7 @@ import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn } from "@/lib/theme";
 import { loadStored, saveStored } from "@/lib/storage";
 import { mapHref } from "@/lib/map";
-import { CLUE_TYPES, fetchClueTable } from "@/lib/clues";
+import { CLUE_TYPES, fetchClueTable, locateClueSolution } from "@/lib/clues";
 import type { ClueEntry } from "@/lib/clues";
 
 export default function CluesPage() {
@@ -17,8 +17,32 @@ export default function CluesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [locating, setLocating] = useState<Record<string, boolean>>({});
+  const [locateError, setLocateError] = useState<Record<string, string>>({});
 
   const activeType = CLUE_TYPES.find((t) => t.id === activeId)!;
+
+  const locateOnMap = async (entry: ClueEntry) => {
+    const key = entry.clue;
+    setLocating((p) => ({ ...p, [key]: true }));
+    setLocateError((p) => {
+      if (!(key in p)) return p;
+      const next = { ...p };
+      delete next[key];
+      return next;
+    });
+    const loc = await locateClueSolution(entry.solution);
+    setLocating((p) => {
+      const next = { ...p };
+      delete next[key];
+      return next;
+    });
+    if (loc) {
+      router.push(mapHref({ x: loc.x, y: loc.y, title: loc.title, marker: true, plane: loc.plane, mapId: loc.mapId }));
+    } else {
+      setLocateError((p) => ({ ...p, [key]: "Couldn't find a map location for this." }));
+    }
+  };
 
   useEffect(() => {
     if (entries[activeId]) return;
@@ -139,7 +163,7 @@ export default function CluesPage() {
               <div key={i} style={{ ...card, padding: "12px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 13, color: C.textDim, marginBottom: 4 }}>{m.clue}</div>
                 <div style={{ fontSize: 15, color: C.parch, fontWeight: 600 }}>{m.solution}</div>
-                {m.coords && (
+                {m.coords ? (
                   <button
                     onClick={() =>
                       router.push(
@@ -157,6 +181,28 @@ export default function CluesPage() {
                   >
                     🗺️ Show on map
                   </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => locateOnMap(m)}
+                      disabled={!!locating[m.clue]}
+                      style={{
+                        ...bigBtn,
+                        marginTop: 10,
+                        padding: "9px 14px",
+                        fontSize: 13,
+                        opacity: locating[m.clue] ? 0.6 : 1,
+                        cursor: locating[m.clue] ? "default" : "pointer",
+                      }}
+                    >
+                      {locating[m.clue] ? "Locating…" : "🗺️ Locate on map"}
+                    </button>
+                    {locateError[m.clue] && (
+                      <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
+                        {locateError[m.clue]}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             ))}
