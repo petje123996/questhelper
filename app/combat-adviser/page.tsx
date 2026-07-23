@@ -2,13 +2,19 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn, chip } from "@/lib/theme";
 import { loadStored, saveStored } from "@/lib/storage";
 import { calcCombat } from "@/lib/quest";
-import type { Player } from "@/lib/quest";
-import { fetchTrainingGuide } from "@/lib/training";
-import type { TrainingEntry } from "@/lib/training";
+import type { Player, Lookup } from "@/lib/quest";
+import { fetchTrainingCandidates } from "@/lib/training";
+import { fetchMonsterEntries } from "@/lib/monsters";
+import type { MonsterEntry } from "@/lib/monsters";
+import { mapHref } from "@/lib/map";
+import { fmtNum, wikiUrl } from "@/lib/format";
+import { useCloseOnBack } from "@/hooks/useCloseOnBack";
+import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 type AccountType = "main" | "ironman" | "hcim";
 
@@ -19,34 +25,44 @@ const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
 ];
 
 export default function CombatAdviserPage() {
+  const router = useRouter();
   const [player, setPlayer] = useState<Player | null>(null);
   const [members, setMembers] = useState(true);
   const [accountType, setAccountType] = useState<AccountType>("main");
-  const [entries, setEntries] = useState<TrainingEntry[] | null>(null);
+  const [entries, setEntries] = useState<MonsterEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingLabel, setLoadingLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [picture, setPicture] = useState<{ name: string; lookup: Lookup } | null>(null);
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) setPlayer(savedPlayer);
   }, []);
 
+  useCloseOnBack(!!picture, () => setPicture(null));
+  useLockBodyScroll(!!picture);
+
   useEffect(() => {
-    const cacheKey = `qh-training-${members ? "p2p" : "f2p"}`;
+    const cacheKey = `qh-monsters-${members ? "p2p" : "f2p"}`;
     setEntries(null);
     const cached = loadStored(cacheKey);
     if (cached && Array.isArray(cached.entries) && cached.entries.length > 0) {
       setEntries(cached.entries);
-      if (Date.now() - (cached.ts || 0) < 14 * 24 * 60 * 60 * 1000) return;
+      if (Date.now() - (cached.ts || 0) < 7 * 24 * 60 * 60 * 1000) return;
     }
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        const parsed = await fetchTrainingGuide(members);
-        if (!parsed.length) throw new Error("No training guide found on the wiki.");
-        setEntries(parsed);
-        saveStored(cacheKey, { ts: Date.now(), entries: parsed });
+        setLoadingLabel("Reading the training guide…");
+        const names = await fetchTrainingCandidates(members);
+        if (!names.length) throw new Error("No training guide found on the wiki.");
+        setLoadingLabel(`Checking stats for ${Math.min(names.length, 45)} monsters…`);
+        const found = await fetchMonsterEntries(names);
+        if (!found.length) throw new Error("Couldn't read monster stats from the wiki.");
+        setEntries(found);
+        saveStored(cacheKey, { ts: Date.now(), entries: found });
       } catch (e: any) {
         setError(e?.message || "Loading failed. Check your connection.");
       } finally {
@@ -58,7 +74,7 @@ export default function CombatAdviserPage() {
   const combatLevel = player ? calcCombat(player.skills) : null;
 
   // Rough "pure" heuristic: Defence well below your offensive stats.
-  // Best-effort only — used for a note, not to change the recommendations.
+  // Best-effort only — used for a note, not to change the ranking.
   const isPure = useMemo(() => {
     if (!player) return false;
     const def = player.skills.defence ?? 1;
@@ -71,24 +87,85 @@ export default function CombatAdviserPage() {
     return def <= 20 && offence - def >= 15;
   }, [player]);
 
+  // Basis: hitpoints × XP-per-hitpoint picks which monsters are worth
+  // fighting at all (higher HP ≈ more combat XP per kill); the final
+  // display order is then lowest Defence first (easiest/fastest to hit),
+  // highest last.
   const { best, alternatives } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
-      return { best: null as TrainingEntry | null, alternatives: [] as TrainingEntry[] };
+      return { best: null as MonsterEntry | null, alternatives: [] as MonsterEntry[] };
     }
-    let bestIdx = 0;
-    for (let i = 0; i < entries.length; i++) {
-      if (entries[i].minLevel <= combatLevel) bestIdx = i;
-      else break;
-    }
-    const bestEntry = entries[bestIdx];
-    const rest = entries
-      .filter((_, i) => i !== bestIdx)
-      .map((e) => ({ e, d: Math.abs(e.minLevel - combatLevel) }))
-      .sort((a, b) => a.d - b.d)
-      .slice(0, 5)
-      .map((x) => x.e);
-    return { best: bestEntry, alternatives: rest };
+    const levelMin = Math.max(1, combatLevel - 60);
+    const levelMax = combatLevel + 20;
+    const inRange = entries.filter(
+      (e) => e.combatLevel === 0 || (e.combatLevel >= levelMin && e.combatLevel <= levelMax)
+    );
+    const pool = inRange.length ? inRange : entries;
+    const byValue = [...pool].sort((a, b) => b.xpPerKill - a.xpPerKill).slice(0, 15);
+    const ranked = byValue.sort((a, b) => a.defence - b.defence);
+    return { best: ranked[0] ?? null, alternatives: ranked.slice(1, 6) };
   }, [entries, combatLevel]);
+
+  const monsterCard = (e: MonsterEntry, highlight: boolean) => (
+    <div
+      key={e.name}
+      style={{
+        ...card,
+        padding: highlight ? "14px 16px" : "10px 14px",
+        marginBottom: highlight ? 18 : 8,
+        borderColor: highlight ? C.gold : C.borderSoft,
+        boxShadow: highlight ? "0 3px 12px rgba(0,0,0,.35)" : undefined,
+      }}
+    >
+      {highlight && (
+        <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>
+          🎯 RECOMMENDED FOR YOU
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ ...(highlight ? { ...goldTitle, fontSize: 20 } : {}), color: highlight ? undefined : C.parch, fontWeight: 700, fontSize: highlight ? 20 : 15 }}>
+          {e.name}
+        </span>
+        {e.combatLevel > 0 && (
+          <span style={{ fontSize: 12, color: C.textDim }}>Lvl {e.combatLevel}</span>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
+        <span style={chip}>❤️ {fmtNum(e.hitpoints)} HP</span>
+        <span style={chip}>🛡️ {fmtNum(e.defence)} Def</span>
+        <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        {e.lookup.coords && (
+          <button
+            onClick={() =>
+              router.push(
+                mapHref({
+                  x: e.lookup.coords!.x,
+                  y: e.lookup.coords!.y,
+                  title: e.name,
+                  marker: true,
+                  plane: e.lookup.coords!.plane,
+                  mapId: e.lookup.coords!.mapId,
+                })
+              )
+            }
+            style={{ flex: 1, padding: "8px 10px", fontSize: 12, fontWeight: 700, background: C.gold, color: C.ink, border: "none", borderRadius: 10, cursor: "pointer" }}
+          >
+            🗺️ Location
+          </button>
+        )}
+        {e.lookup.images.length > 0 && (
+          <button
+            onClick={() => setPicture({ name: e.name, lookup: e.lookup })}
+            style={{ flex: 1, padding: "8px 10px", fontSize: 12, fontWeight: 700, background: "transparent", color: C.gold, border: `1px solid ${C.border}`, borderRadius: 10, cursor: "pointer" }}
+          >
+            🖼️ Picture
+          </button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div style={frame}>
@@ -188,17 +265,15 @@ export default function CombatAdviserPage() {
                 )}
                 {isPure && (
                   <div style={{ marginTop: accountType !== "main" ? 4 : 0 }}>
-                    🎯 Your Defence looks low relative to your other combat stats — if these spots list a
-                    dangerous max hit, consider Ranged/Magic safespotting instead of meleeing in the open.
+                    🎯 Your Defence looks low relative to your other combat stats — consider Ranged/Magic
+                    safespotting instead of meleeing in the open where possible.
                   </div>
                 )}
               </div>
             )}
 
             {loading && (
-              <div style={{ textAlign: "center", padding: 30, color: C.textDim }}>
-                Fetching the {members ? "members'" : "F2P"} combat training guide from the wiki…
-              </div>
+              <div style={{ textAlign: "center", padding: 30, color: C.textDim }}>{loadingLabel}</div>
             )}
 
             {error && !loading && (
@@ -212,49 +287,75 @@ export default function CombatAdviserPage() {
 
             {best && !loading && !error && (
               <>
-                <div
-                  style={{
-                    ...card,
-                    borderColor: C.gold,
-                    padding: "14px 16px",
-                    marginBottom: 18,
-                    boxShadow: "0 3px 12px rgba(0,0,0,.35)",
-                  }}
-                >
-                  <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>
-                    🎯 RECOMMENDED FOR YOU
-                  </div>
-                  <div style={{ ...goldTitle, fontSize: 20, fontWeight: 700 }}>{best.monster}</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-                    <span style={chip}>📊 Level {best.levelText}</span>
-                  </div>
-                  {best.detail && (
-                    <div style={{ fontSize: 13, color: C.text, marginTop: 8 }}>{best.detail}</div>
-                  )}
-                </div>
-
+                {monsterCard(best, true)}
                 <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>Other options</div>
-                {alternatives.map((e, i) => (
-                  <div key={i} style={{ ...card, padding: "10px 14px", marginBottom: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <span style={{ color: C.parch, fontWeight: 600, fontSize: 15 }}>{e.monster}</span>
-                      <span style={{ fontSize: 12, color: C.textDim }}>Level {e.levelText}</span>
-                    </div>
-                    {e.detail && (
-                      <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{e.detail}</div>
-                    )}
-                  </div>
-                ))}
+                {alternatives.map((e) => monsterCard(e, false))}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  Based on the wiki's {members ? "Pay-to-play" : "Free-to-play"} Combat Training guide,
-                  matched to your combat level.
+                  Picked from the wiki's {members ? "Pay-to-play" : "Free-to-play"} Combat Training guide by
+                  hitpoints (≈ XP value per kill), ordered lowest Defence first.
                 </div>
               </>
             )}
           </>
         )}
       </div>
+
+      {picture && (
+        <div
+          onClick={() => setPicture(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,.7)",
+            zIndex: 50,
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 560,
+              maxHeight: "82vh",
+              overflowY: "auto",
+              background: C.bg,
+              borderTop: `2px solid ${C.gold}`,
+              borderRadius: "16px 16px 0 0",
+              padding: "14px 14px 24px",
+              boxSizing: "border-box",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ ...goldTitle, fontSize: 17, fontWeight: 700 }}>🔍 {picture.name}</div>
+              <button
+                onClick={() => setPicture(null)}
+                style={{ width: 32, height: 32, borderRadius: "50%", background: C.panelSoft, color: C.parch, border: `1px solid ${C.border}`, fontSize: 14, cursor: "pointer", lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+            {picture.lookup.images.map((src) => (
+              <img
+                key={src}
+                src={src}
+                alt=""
+                style={{ width: "100%", borderRadius: 10, marginBottom: 10, border: `1px solid ${C.borderSoft}` }}
+              />
+            ))}
+            <a
+              href={wikiUrl(picture.name)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: "block", textAlign: "center", padding: "12px", background: C.panelSoft, color: C.gold, border: `1px solid ${C.border}`, borderRadius: 10, textDecoration: "none", fontWeight: 600, fontSize: 14 }}
+            >
+              Open on wiki ↗
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

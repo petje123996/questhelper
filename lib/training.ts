@@ -1,12 +1,5 @@
 import { API, cleanText, fetchJson } from "./format";
 
-export type TrainingEntry = {
-  levelText: string;
-  minLevel: number;
-  monster: string;
-  detail: string;
-};
-
 const GUIDES: { members: boolean; pages: string[]; searchTerm: string }[] = [
   {
     members: false,
@@ -20,92 +13,45 @@ const GUIDES: { members: boolean; pages: string[]; searchTerm: string }[] = [
   },
 ];
 
-function firstNumber(s: string): number {
-  const m = s.match(/\d+/);
-  return m ? parseInt(m[0], 10) : 1;
-}
-
-// Combat-training guide pages list recommended monsters either as one
-// table with a level-range column, or as level-range section headers
-// each followed by its own table — support both layouts since we can't
-// verify which one is live without wiki access from this environment.
-export function parseTrainingGuide(html: string): TrainingEntry[] {
+// Every monster mentioned in a guide's tables or lists is wiki-linked, so
+// harvesting all links (rather than trying to identify a "monster column"
+// in each table, which varies between guides) is a much more reliable way
+// to find candidate names — it doesn't matter if the surrounding table
+// layout doesn't match what we expect, or if some monsters are only
+// mentioned in prose/bullet lists instead of a table.
+function extractGuideLinks(html: string): string[] {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const root = doc.body;
   root
     .querySelectorAll(".navbox, .references, #toc, .toc, .mw-editsection, sup, style, script")
     .forEach((el) => el.remove());
 
-  const entries: TrainingEntry[] = [];
-  let sectionLevel: string | null = null;
-
-  const handleTable = (table: Element) => {
-    const headerCells = Array.from(table.querySelectorAll("tr:first-child th")).map((th) =>
-      cleanText(th.textContent || "").toLowerCase()
-    );
-    const levelIdx = headerCells.findIndex((h) => h.includes("level") || h.includes("combat"));
-    const monsterIdx = headerCells.findIndex(
-      (h) => h.includes("monster") || h.includes("creature") || h.includes("enemy")
-    );
-
-    Array.from(table.querySelectorAll("tr"))
-      .slice(headerCells.length ? 1 : 0)
-      .forEach((tr) => {
-        const cells = Array.from(tr.querySelectorAll("td"));
-        if (!cells.length) return;
-
-        let levelText = sectionLevel || "";
-        let monster = "";
-        const rest: string[] = [];
-
-        cells.forEach((td, i) => {
-          const t = cleanText(td.textContent || "");
-          if (!t) return;
-          if (i === levelIdx) levelText = t;
-          else if (i === monsterIdx) monster = t;
-          else rest.push(t);
-        });
-
-        if (!monster) {
-          // No monster column identified by header: assume the first
-          // non-level cell is the monster name.
-          const fallback = cells.find((_, i) => i !== levelIdx);
-          if (fallback) monster = cleanText(fallback.textContent || "");
-        }
-        if (!levelText && rest.length && /^\d/.test(rest[0])) {
-          levelText = rest.shift() || "";
-        }
-        if (!monster || monster.length > 60) return;
-
-        entries.push({
-          levelText: levelText || "Any",
-          minLevel: firstNumber(levelText || "1"),
-          monster,
-          detail: rest.join(" · "),
-        });
-      });
-  };
-
-  Array.from(root.querySelectorAll("h2, h3, h4, table")).forEach((el) => {
-    if (el.tagName === "TABLE") {
-      handleTable(el);
-      return;
-    }
-    const title = cleanText(el.textContent || "");
-    if (/level/i.test(title) || /^\d/.test(title)) sectionLevel = title;
+  const names: string[] = [];
+  const seen = new Set<string>();
+  root.querySelectorAll("table a, li a, p a").forEach((a) => {
+    const href = a.getAttribute("href") || "";
+    if (!href.startsWith("/w/")) return;
+    if (a.querySelector("img")) return;
+    const page = decodeURIComponent(href.slice(3)).split("#")[0].replace(/_/g, " ");
+    if (!page || page.includes(":") || page.includes("/")) return;
+    const key = page.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const label = cleanText(a.textContent || "");
+    if (label.length < 2) return;
+    names.push(page);
   });
-
-  return entries.sort((a, b) => a.minLevel - b.minLevel);
+  return names;
 }
 
-async function tryPage(page: string): Promise<TrainingEntry[] | null> {
+async function tryPageLinks(page: string): Promise<string[] | null> {
   try {
     const data = await fetchJson(
       `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(page)}`
     );
     if (data.error) return null;
-    const parsed = parseTrainingGuide(data.parse.text["*"]);
-    return parsed.length > 0 ? parsed : null;
+    const names = extractGuideLinks(data.parse.text["*"]);
+    return names.length > 0 ? names : null;
   } catch {
     return null;
   }
@@ -114,10 +60,10 @@ async function tryPage(page: string): Promise<TrainingEntry[] | null> {
 // Try each known candidate title for the F2P/members guide, then fall
 // back to a wiki search so a wrong guess at the exact page title doesn't
 // break it (same pattern used for the clue solver's page lookups).
-export async function fetchTrainingGuide(members: boolean): Promise<TrainingEntry[]> {
+export async function fetchTrainingCandidates(members: boolean): Promise<string[]> {
   const guide = GUIDES.find((g) => g.members === members)!;
   for (const page of guide.pages) {
-    const found = await tryPage(page);
+    const found = await tryPageLinks(page);
     if (found) return found;
   }
   try {
@@ -127,7 +73,7 @@ export async function fetchTrainingGuide(members: boolean): Promise<TrainingEntr
     const candidates: string[] = search[1] || [];
     for (const page of candidates) {
       if (guide.pages.includes(page)) continue;
-      const found = await tryPage(page);
+      const found = await tryPageLinks(page);
       if (found) return found;
     }
   } catch {
