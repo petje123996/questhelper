@@ -69,11 +69,24 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
     if (!headerRow) return;
     const headerCells = Array.from(headerRow.querySelectorAll("th"));
     if (headerCells.length < 3) return;
-    const labels = headerCells.map(headerLabel);
+    // The "Monster" header spans 2 real columns (icon + name) via
+    // colspan, so array index must follow expanded column position, not
+    // <th> element position — otherwise every index after it is off by
+    // one and the "name" cell we read is actually the empty icon cell.
+    const labels: string[] = [];
+    headerCells.forEach((th) => {
+      const span = Math.max(1, parseInt(th.getAttribute("colspan") || "1", 10) || 1);
+      const label = headerLabel(th);
+      for (let i = 0; i < span; i++) labels.push(label);
+    });
 
     const nameIdx = labels.findIndex((h) => h.includes("monster") || h.includes("name"));
     const hpIdx = labels.findIndex((h) => h.includes("hitpoint"));
     if (nameIdx === -1 || hpIdx === -1) return; // not a bestiary list table
+    // How many expanded columns the Monster header actually spans, so we
+    // can pick whichever of them holds the real name text (not the icon).
+    let nameSpanEnd = nameIdx;
+    while (nameSpanEnd + 1 < labels.length && labels[nameSpanEnd + 1] === labels[nameIdx]) nameSpanEnd++;
 
     const defIdx = labels.findIndex(
       (h) =>
@@ -94,9 +107,23 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
     Array.from(table.querySelectorAll("tr"))
       .slice(1)
       .forEach((tr) => {
-        const cells = Array.from(tr.querySelectorAll("th, td"));
+        // Expand any colspan in the data row too, so cell index stays
+        // aligned with the header's expanded column positions.
+        const cells: Element[] = [];
+        Array.from(tr.children).forEach((cell) => {
+          if (cell.tagName !== "TH" && cell.tagName !== "TD") return;
+          const span = Math.max(1, parseInt(cell.getAttribute("colspan") || "1", 10) || 1);
+          for (let i = 0; i < span; i++) cells.push(cell);
+        });
         if (cells.length <= Math.max(nameIdx, hpIdx)) return;
-        const name = cleanText(cells[nameIdx]?.textContent || "");
+        // The name is somewhere across the Monster column's full span
+        // (often icon cell + name cell) — take whichever holds the most
+        // text, since an icon-only cell has no textContent to speak of.
+        let name = "";
+        for (let i = nameIdx; i <= nameSpanEnd && i < cells.length; i++) {
+          const t = cleanText(cells[i].textContent || "");
+          if (t.length > name.length) name = t;
+        }
         if (!name) return;
         const hitpoints = firstNumber(cleanText(cells[hpIdx]?.textContent || ""));
         if (!hitpoints) return;
