@@ -7,6 +7,7 @@ export type BestiaryRow = {
   combatLevel: number;
   hitpoints: number;
   defence: number;
+  attack: number;
 };
 
 // The full (members) bestiary isn't one table — it's split into a
@@ -21,7 +22,12 @@ const MEMBER_BRACKETS: [number, number][] = [
 
 function bracketsForLevel(level: number): { title: string; mid: number }[] {
   const lo = Math.max(1, level - 60);
-  const hi = level + 20;
+  // Combat level under-represents a low-Defence account's real striking
+  // power (Defence/Hitpoints/Prayer all feed into it, Attack/Strength
+  // only partly) — a wide upper bound means a pure with a modest combat
+  // level still sees the higher-level-but-weak-Defence monsters they can
+  // actually fight safely, not just ones near their nominal level.
+  const hi = level + 60;
   return MEMBER_BRACKETS.filter(([a, b]) => b >= lo && a <= hi).map(([a, b]) => ({
     title: `Bestiary/Levels ${a} to ${b}`,
     mid: Math.round((a + b) / 2),
@@ -101,6 +107,7 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
           !h.includes("standard") &&
           !h.includes("heavy"))
     );
+    const atkIdx = labels.findIndex((h) => h.includes("attack level"));
     const cbIdx = labels.findIndex((h) => h.includes("combat level") || h === "combat");
     const membersIdx = labels.findIndex((h) => h.includes("member") || h.includes("f2p"));
 
@@ -127,9 +134,10 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
         if (!name) return;
         const hitpoints = firstNumber(cleanText(cells[hpIdx]?.textContent || ""));
         if (!hitpoints) return;
-        // -1 = no Defence column found at all on this table (unknown),
-        // vs. a real 0 Defence value for a genuinely defenceless monster.
+        // -1 = no Defence/Attack column found at all on this table
+        // (unknown), vs. a real 0 value for a genuinely 0-level monster.
         const defence = defIdx >= 0 ? firstNumber(cleanText(cells[defIdx]?.textContent || "")) : -1;
+        const attack = atkIdx >= 0 ? firstNumber(cleanText(cells[atkIdx]?.textContent || "")) : -1;
         const cbText = cbIdx >= 0 ? cleanText(cells[cbIdx]?.textContent || "") : "";
         const combatLevel = firstNumber(cbText) || fallbackLevel;
 
@@ -141,7 +149,7 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
           else if (cell.querySelector("img, svg")) members = true;
         }
 
-        rows.push({ name, members, combatLevel, hitpoints, defence });
+        rows.push({ name, members, combatLevel, hitpoints, defence, attack });
       });
   });
 

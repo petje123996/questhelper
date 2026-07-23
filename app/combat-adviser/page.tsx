@@ -19,7 +19,14 @@ import { useCloseOnBack } from "@/hooks/useCloseOnBack";
 import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 type AccountType = "main" | "ironman" | "hcim";
-type Entry = { name: string; hitpoints: number; defence: number; combatLevel: number; xpPerKill: number };
+type Entry = {
+  name: string;
+  hitpoints: number;
+  defence: number;
+  attack: number;
+  combatLevel: number;
+  xpPerKill: number;
+};
 
 const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
   { id: "main", label: "Main" },
@@ -82,6 +89,7 @@ export default function CombatAdviserPage() {
             name: r.name,
             hitpoints: r.hitpoints,
             defence: r.defence,
+            attack: r.attack,
             combatLevel: r.combatLevel,
             xpPerKill: r.hitpoints * 4,
           });
@@ -114,6 +122,7 @@ export default function CombatAdviserPage() {
             name: e.name,
             hitpoints: e.hitpoints,
             defence: e.defence,
+            attack: e.attack,
             combatLevel: e.combatLevel,
             xpPerKill: e.xpPerKill,
           }));
@@ -143,10 +152,16 @@ export default function CombatAdviserPage() {
     return def <= 20 && offence - def >= 15;
   }, [player]);
 
-  // Basis: hitpoints × XP-per-hitpoint picks which monsters are worth
-  // fighting at all (higher HP ≈ more combat XP per kill); the final
-  // display order is then lowest Defence first (easiest/fastest to hit),
-  // highest last. Monsters with unknown Defence (-1) sort to the end.
+  // Score each monster by hitpoints (more HP ≈ more combat XP per kill,
+  // and more kills survivable per trip) against how hard it hits back and
+  // how much Defence it takes to actually land hits on it: as high as
+  // possible HP, as low as possible Attack and Defence — this matters most
+  // for a pure/low-Defence account, whose own combat level under-sells how
+  // much they can safely fight, but low own-Defence combined with high
+  // offence generally makes it the right call for anyone. Monsters with an
+  // unknown Attack/Defence (-1, column missing on that table) are scored
+  // as worst-case rather than best-case, so missing data can't falsely
+  // push them to the top.
   const { best, alternatives } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
       return { best: null as Entry | null, alternatives: [] as Entry[] };
@@ -157,13 +172,10 @@ export default function CombatAdviserPage() {
       (e) => e.combatLevel === 0 || (e.combatLevel >= levelMin && e.combatLevel <= levelMax)
     );
     const pool = inRange.length ? inRange : entries;
-    const byValue = [...pool].sort((a, b) => b.xpPerKill - a.xpPerKill).slice(0, 15);
-    const ranked = byValue.sort((a, b) => {
-      const da = a.defence < 0 ? Infinity : a.defence;
-      const db = b.defence < 0 ? Infinity : b.defence;
-      return da - db;
-    });
-    return { best: ranked[0] ?? null, alternatives: ranked.slice(1, 6) };
+    const statOrWorst = (v: number) => (v < 0 ? 9999 : v);
+    const score = (e: Entry) => e.hitpoints / (1 + statOrWorst(e.defence) + statOrWorst(e.attack));
+    const ranked = [...pool].sort((a, b) => score(b) - score(a));
+    return { best: ranked[0] ?? null, alternatives: ranked.slice(1) };
   }, [entries, combatLevel]);
 
   const openPicture = async (name: string) => {
@@ -203,6 +215,7 @@ export default function CombatAdviserPage() {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
         <span style={chip}>❤️ {fmtNum(e.hitpoints)} HP</span>
+        <span style={chip}>⚔️ {e.attack < 0 ? "?" : fmtNum(e.attack)} Atk</span>
         <span style={chip}>🛡️ {e.defence < 0 ? "?" : fmtNum(e.defence)} Def</span>
         <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
       </div>
@@ -462,12 +475,15 @@ export default function CombatAdviserPage() {
             {best && !loading && !error && (
               <>
                 {monsterCard(best, true)}
-                <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>Other options</div>
+                <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
+                  All options ({alternatives.length + 1})
+                </div>
                 {alternatives.map((e) => monsterCard(e, false))}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  Picked from the wiki's Bestiary by hitpoints (≈ XP value per kill), ordered lowest
-                  Defence first.
+                  From the wiki's Bestiary for your level range, ranked by highest Hitpoints (≈ XP value
+                  per kill) against lowest Attack and Defence — best options for landing hits fast and
+                  taking few back are at the top.
                 </div>
               </>
             )}
