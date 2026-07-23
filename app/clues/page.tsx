@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Nav from "@/components/Nav";
@@ -11,6 +11,8 @@ import { mapHref } from "@/lib/map";
 import { CLUE_TYPES, fetchClueTable, locateClueSolution, lookupClueSolution } from "@/lib/clues";
 import type { ClueEntry } from "@/lib/clues";
 import type { Lookup } from "@/lib/quest";
+import { useCloseOnBack } from "@/hooks/useCloseOnBack";
+import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 export default function CluesPage() {
   const router = useRouter();
@@ -23,6 +25,9 @@ export default function CluesPage() {
   const [locateError, setLocateError] = useState<Record<string, string>>({});
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
+
+  useCloseOnBack(!!lookup, useCallback(() => setLookup(null), []));
+  useLockBodyScroll(!!lookup);
 
   const activeType = CLUE_TYPES.find((t) => t.id === activeId)!;
 

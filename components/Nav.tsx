@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { C } from "@/lib/theme";
+import { useCloseOnBack } from "@/hooks/useCloseOnBack";
+import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 const LINKS: { href: string; label: string; icon: string }[] = [
   { href: "/", label: "Quests", icon: "⚔️" },
@@ -18,6 +20,9 @@ const LINKS: { href: string; label: string; icon: string }[] = [
 export default function Nav({ buttonStyle }: { buttonStyle?: React.CSSProperties }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
+  const close = useCallback(() => setOpen(false), []);
+  useCloseOnBack(open, close);
+  useLockBodyScroll(open);
 
   return (
     <>

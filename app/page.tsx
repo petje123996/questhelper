@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Nav from "@/components/Nav";
+import { useCloseOnBack } from "@/hooks/useCloseOnBack";
+import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 import {
   C,
   frame,
@@ -115,6 +117,11 @@ export default function QuestHelper() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
+
+  useCloseOnBack(!!lookup, useCallback(() => setLookup(null), []));
+  useCloseOnBack(stepsOpen, useCallback(() => setStepsOpen(false), []));
+  useCloseOnBack(galleryOpen, useCallback(() => setGalleryOpen(false), []));
+  useLockBodyScroll(!!lookup || stepsOpen || galleryOpen);
 
   useEffect(() => {
     const r = loadStored("qh-recent");
