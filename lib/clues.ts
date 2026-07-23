@@ -1,6 +1,6 @@
 import { API, cleanText, fetchJson } from "./format";
-import { extractCoords } from "./quest";
-import type { Coords } from "./quest";
+import { buildLookup, extractCoords, fetchPageHtml } from "./quest";
+import type { Coords, Lookup } from "./quest";
 
 // Wiki page titles for clue solutions move around / aren't 100% certain
 // from memory, so each type lists candidate titles to try in order.
@@ -108,16 +108,21 @@ function guessTitles(solution: string): string[] {
 
 export async function locateClueSolution(solution: string): Promise<ClueLocation | null> {
   for (const title of guessTitles(solution)) {
-    try {
-      const data = await fetchJson(
-        `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(title)}`
-      );
-      if (data.error) continue;
-      const coords = extractCoords(data.parse.text["*"]);
-      if (coords) return { ...coords, title };
-    } catch {
-      /* try next candidate */
-    }
+    const html = await fetchPageHtml(title);
+    if (!html) continue;
+    const coords = extractCoords(html);
+    if (coords) return { ...coords, title };
+  }
+  return null;
+}
+
+// Images (and coordinates, if any) for whoever/whatever a clue solution
+// points at — e.g. an NPC that only roams an area shows its wiki
+// infobox's area map here instead of a single pinpoint.
+export async function lookupClueSolution(solution: string): Promise<Lookup | null> {
+  for (const title of guessTitles(solution)) {
+    const html = await fetchPageHtml(title);
+    if (html) return buildLookup(title, title, html);
   }
   return null;
 }
