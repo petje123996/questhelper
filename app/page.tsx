@@ -18,8 +18,8 @@ import {
   toolIcon,
 } from "@/lib/theme";
 import { loadStored, saveStored, removeStored, storageKey } from "@/lib/storage";
-import { API, capitalize, fmtNum, fetchJson, normalizeSkill, resolveSrc, wikiUrl } from "@/lib/format";
-import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords } from "@/lib/quest";
+import { API, capitalize, fmtNum, fetchJson, normalizeSkill, wikiUrl } from "@/lib/format";
+import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords, fetchLookup } from "@/lib/quest";
 import { mapHref } from "@/lib/map";
 import type {
   SkillReq,
@@ -528,41 +528,7 @@ export default function QuestHelper() {
   // Fetch images + coordinates for a wiki page
   const lookupPage = async (page: string, label: string) => {
     setLookup({ title: label, page, loading: true, images: [], coords: null, error: null });
-    try {
-      const data = await fetchJson(
-        `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
-          page
-        )}`
-      );
-      if (data.error) throw new Error("Page not found");
-      const html: string = data.parse.text["*"];
-      const coords = extractCoords(html);
-      const doc = new DOMParser().parseFromString(html, "text/html");
-      const found: { src: string; isMap: boolean }[] = [];
-      const seen = new Set<string>();
-      doc.querySelectorAll("img").forEach((img) => {
-        const w = parseInt(img.getAttribute("width") || "0", 10);
-        if (w < 100) return;
-        const src = resolveSrc(img.getAttribute("src") || "");
-        if (!src || seen.has(src)) return;
-        seen.add(src);
-        found.push({ src, isMap: /location|map/i.test(src) });
-      });
-      found.sort((a, b) => Number(b.isMap) - Number(a.isMap));
-      const images = found.slice(0, 3).map((f) => f.src);
-      setLookup({
-        title: label,
-        page,
-        loading: false,
-        images,
-        coords,
-        error: images.length || coords ? null : "No images found on this page.",
-      });
-    } catch {
-      setLookup((prev) =>
-        prev ? { ...prev, loading: false, error: "Loading failed." } : null
-      );
-    }
+    setLookup(await fetchLookup(page, label));
   };
 
   const afterInfo = () => {

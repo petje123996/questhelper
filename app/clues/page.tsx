@@ -5,10 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn } from "@/lib/theme";
+import { wikiUrl } from "@/lib/format";
 import { loadStored, saveStored } from "@/lib/storage";
 import { mapHref } from "@/lib/map";
-import { CLUE_TYPES, fetchClueTable, locateClueSolution } from "@/lib/clues";
+import { CLUE_TYPES, fetchClueTable, locateClueSolution, lookupClueSolution } from "@/lib/clues";
 import type { ClueEntry } from "@/lib/clues";
+import type { Lookup } from "@/lib/quest";
 
 export default function CluesPage() {
   const router = useRouter();
@@ -19,8 +21,27 @@ export default function CluesPage() {
   const [query, setQuery] = useState("");
   const [locating, setLocating] = useState<Record<string, boolean>>({});
   const [locateError, setLocateError] = useState<Record<string, string>>({});
+  const [lookup, setLookup] = useState<Lookup | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   const activeType = CLUE_TYPES.find((t) => t.id === activeId)!;
+
+  const openLookup = async (entry: ClueEntry) => {
+    setLookupLoading(true);
+    setLookup({ title: entry.solution, page: "", loading: true, images: [], coords: null, error: null });
+    const result = await lookupClueSolution(entry.solution);
+    setLookupLoading(false);
+    setLookup(
+      result || {
+        title: entry.solution,
+        page: entry.solution,
+        loading: false,
+        images: [],
+        coords: null,
+        error: "Couldn't find a wiki page for this.",
+      }
+    );
+  };
 
   const locateOnMap = async (entry: ClueEntry) => {
     const key = entry.clue;
@@ -165,33 +186,33 @@ export default function CluesPage() {
               <div key={i} style={{ ...card, padding: "12px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 13, color: C.textDim, marginBottom: 4 }}>{m.clue}</div>
                 <div style={{ fontSize: 15, color: C.parch, fontWeight: 600 }}>{m.solution}</div>
-                {m.coords ? (
-                  <button
-                    onClick={() =>
-                      router.push(
-                        mapHref({
-                          x: m.coords!.x,
-                          y: m.coords!.y,
-                          title: m.solution,
-                          marker: true,
-                          plane: m.coords!.plane,
-                          mapId: m.coords!.mapId,
-                        })
-                      )
-                    }
-                    style={{ ...bigBtn, marginTop: 10, padding: "9px 14px", fontSize: 13 }}
-                  >
-                    🗺️ Show on map
-                  </button>
-                ) : (
-                  <>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  {m.coords ? (
+                    <button
+                      onClick={() =>
+                        router.push(
+                          mapHref({
+                            x: m.coords!.x,
+                            y: m.coords!.y,
+                            title: m.solution,
+                            marker: true,
+                            plane: m.coords!.plane,
+                            mapId: m.coords!.mapId,
+                          })
+                        )
+                      }
+                      style={{ ...bigBtn, flex: 1, padding: "9px 10px", fontSize: 13 }}
+                    >
+                      🗺️ Show on map
+                    </button>
+                  ) : (
                     <button
                       onClick={() => locateOnMap(m)}
                       disabled={!!locating[m.clue]}
                       style={{
                         ...bigBtn,
-                        marginTop: 10,
-                        padding: "9px 14px",
+                        flex: 1,
+                        padding: "9px 10px",
                         fontSize: 13,
                         opacity: locating[m.clue] ? 0.6 : 1,
                         cursor: locating[m.clue] ? "default" : "pointer",
@@ -199,18 +220,152 @@ export default function CluesPage() {
                     >
                       {locating[m.clue] ? "Locating…" : "🗺️ Locate on map"}
                     </button>
-                    {locateError[m.clue] && (
-                      <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
-                        {locateError[m.clue]}
-                      </div>
-                    )}
-                  </>
+                  )}
+                  <button
+                    onClick={() => openLookup(m)}
+                    style={{
+                      flex: 1,
+                      padding: "9px 10px",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      background: "transparent",
+                      color: C.gold,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 12,
+                      cursor: "pointer",
+                    }}
+                  >
+                    🖼️ Picture
+                  </button>
+                </div>
+                {locateError[m.clue] && (
+                  <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
+                    {locateError[m.clue]}
+                  </div>
                 )}
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {lookup && (
+        <div
+          onClick={() => setLookup(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,.7)",
+            zIndex: 50,
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 560,
+              maxHeight: "82vh",
+              overflowY: "auto",
+              background: C.bg,
+              borderTop: `2px solid ${C.gold}`,
+              borderRadius: "16px 16px 0 0",
+              padding: "14px 14px 24px",
+              boxSizing: "border-box",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ ...goldTitle, fontSize: 17, fontWeight: 700 }}>🔍 {lookup.title}</div>
+              <button
+                onClick={() => setLookup(null)}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: "50%",
+                  background: C.panelSoft,
+                  color: C.parch,
+                  border: `1px solid ${C.border}`,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {lookupLoading && (
+              <div style={{ color: C.textDim, padding: "20px 0", textAlign: "center" }}>
+                Searching the wiki…
+              </div>
+            )}
+
+            {!lookupLoading && lookup.error && (
+              <div style={{ color: C.textDim, fontSize: 14, marginBottom: 12 }}>{lookup.error}</div>
+            )}
+
+            {!lookupLoading &&
+              lookup.images.map((src) => (
+                <img
+                  key={src}
+                  src={src}
+                  alt=""
+                  style={{
+                    width: "100%",
+                    borderRadius: 10,
+                    marginBottom: 10,
+                    border: `1px solid ${C.borderSoft}`,
+                  }}
+                />
+              ))}
+
+            {!lookupLoading && lookup.coords && (
+              <button
+                onClick={() => {
+                  const c = lookup.coords!;
+                  const title = lookup.title;
+                  setLookup(null);
+                  router.push(mapHref({ x: c.x, y: c.y, title, marker: true, plane: c.plane, mapId: c.mapId }));
+                }}
+                style={{ ...bigBtn, marginBottom: 12 }}
+              >
+                🗺️ Show on map
+              </button>
+            )}
+
+            {!lookupLoading && lookup.page && (
+              <a
+                href={wikiUrl(lookup.page)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "block",
+                  textAlign: "center",
+                  padding: "12px",
+                  background: C.panelSoft,
+                  color: C.gold,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  textDecoration: "none",
+                  fontWeight: 600,
+                  fontSize: 14,
+                }}
+              >
+                Open on wiki ↗
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

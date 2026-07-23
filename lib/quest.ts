@@ -1,4 +1,4 @@
-import { cleanText, normalizeSkill, resolveSrc } from "./format";
+import { API, cleanText, fetchJson, normalizeSkill, resolveSrc } from "./format";
 
 export type SkillReq = { level: number; skill: string; note: string };
 export type Coords = { x: number; y: number; plane?: number; mapId?: number };
@@ -351,4 +351,50 @@ export function parseGuide(html: string): {
   walk(root);
 
   return { steps, items, meta, rewards };
+}
+
+export async function fetchPageHtml(page: string): Promise<string | null> {
+  try {
+    const data = await fetchJson(
+      `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(page)}`
+    );
+    if (data.error) return null;
+    return data.parse.text["*"];
+  } catch {
+    return null;
+  }
+}
+
+// Images + coordinates for a wiki page, prioritising map/location images —
+// this is how an NPC's roaming-area map (shown on its infobox "Map"
+// section) gets picked up ahead of e.g. its portrait.
+export function buildLookup(page: string, title: string, html: string): Lookup {
+  const coords = extractCoords(html);
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const found: { src: string; isMap: boolean }[] = [];
+  const seen = new Set<string>();
+  doc.querySelectorAll("img").forEach((img) => {
+    const w = parseInt(img.getAttribute("width") || "0", 10);
+    if (w < 100) return;
+    const src = resolveSrc(img.getAttribute("src") || "");
+    if (!src || seen.has(src)) return;
+    seen.add(src);
+    found.push({ src, isMap: /location|map/i.test(src) });
+  });
+  found.sort((a, b) => Number(b.isMap) - Number(a.isMap));
+  const images = found.slice(0, 3).map((f) => f.src);
+  return {
+    title,
+    page,
+    loading: false,
+    images,
+    coords,
+    error: images.length || coords ? null : "No images found on this page.",
+  };
+}
+
+export async function fetchLookup(page: string, title: string): Promise<Lookup> {
+  const html = await fetchPageHtml(page);
+  if (!html) return { title, page, loading: false, images: [], coords: null, error: "Page not found." };
+  return buildLookup(page, title, html);
 }
