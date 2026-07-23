@@ -19,7 +19,7 @@ import {
   toolChip,
   toolIcon,
 } from "@/lib/theme";
-import { loadStored, saveStored, removeStored, storageKey } from "@/lib/storage";
+import { loadStored, saveStored, removeStored, removeStoredByPrefix, storageKey } from "@/lib/storage";
 import { API, capitalize, fmtNum, fetchJson, normalizeSkill, wikiUrl } from "@/lib/format";
 import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords, fetchLookup } from "@/lib/quest";
 import { mapHref } from "@/lib/map";
@@ -299,6 +299,23 @@ export default function QuestHelper() {
         if (s && s.name) skills[normalizeSkill(String(s.name))] = Number(s.level) || 1;
       });
       const p: Player = { name, skills };
+
+      const previousName = player?.name;
+      if (previousName && previousName.toLowerCase() !== name.toLowerCase()) {
+        // Switching to a different character: this device's tracked
+        // progress belonged to the old one, so start fresh for the new one.
+        setCompleted(new Set());
+        setProgress({});
+        setRecent([]);
+        saveStored("qh-completed", []);
+        saveStored("qh-progress", {});
+        saveStored("qh-recent", []);
+        removeStored("qh-diary-done");
+        removeStored("qh-diary-totals");
+        removeStored("qh-ca-done");
+        removeStoredByPrefix("qh-quest-");
+      }
+
       setPlayer(p);
       saveStored("qh-rsn", p);
     } catch (e: any) {
