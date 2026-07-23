@@ -25,6 +25,7 @@ type Entry = {
   defence: number;
   attack: number;
   strength: number;
+  maxHit: number;
   combatLevel: number;
   xpPerKill: number;
 };
@@ -110,6 +111,7 @@ export default function CombatAdviserPage() {
             defence: r.defence,
             attack: r.attack,
             strength: r.strength,
+            maxHit: r.maxHit,
             combatLevel: r.combatLevel,
             xpPerKill: r.hitpoints * 4,
           });
@@ -144,6 +146,7 @@ export default function CombatAdviserPage() {
             defence: e.defence,
             attack: e.attack,
             strength: e.strength,
+            maxHit: e.maxHit,
             combatLevel: e.combatLevel,
             xpPerKill: e.xpPerKill,
           }));
@@ -308,6 +311,7 @@ export default function CombatAdviserPage() {
         <span style={chip}>⚔️ {statLabel(e.attack)} Atk</span>
         <span style={chip}>💪 {statLabel(e.strength)} Str</span>
         <span style={chip}>🛡️ {statLabel(e.defence)} Def</span>
+        <span style={chip}>💥 {statLabel(e.maxHit)} max hit</span>
         <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>

@@ -9,6 +9,7 @@ export type MonsterEntry = {
   defence: number;
   attack: number;
   strength: number;
+  maxHit: number;
   combatLevel: number;
   xpPerKill: number;
   lookup: Lookup;
@@ -28,7 +29,7 @@ const XP_PER_HP = 4;
 // substantial table on a monster page, without depending on class names.
 function parseMonsterInfobox(
   html: string
-): { hitpoints: number; defence: number; attack: number; strength: number; combatLevel: number } | null {
+): { hitpoints: number; defence: number; attack: number; strength: number; maxHit: number; combatLevel: number } | null {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const tables = Array.from(doc.body.querySelectorAll("table"));
 
@@ -37,6 +38,7 @@ function parseMonsterInfobox(
     let defence = 0;
     let attack = 0;
     let strength = 0;
+    let maxHit = 0;
     let combatLevel = 0;
     table.querySelectorAll("tr").forEach((tr) => {
       const cells = Array.from(tr.children).filter(
@@ -52,13 +54,14 @@ function parseMonsterInfobox(
       else if (label.startsWith("defence")) defence = Math.max(defence, num);
       else if (label.startsWith("attack")) attack = Math.max(attack, num);
       else if (label.startsWith("strength")) strength = Math.max(strength, num);
+      else if (label.includes("max hit") || label.includes("maximum hit")) maxHit = Math.max(maxHit, num);
       else if (label.includes("combat level")) combatLevel = Math.max(combatLevel, num);
     });
     // Require both Hitpoints and Combat level in the same table — a
     // content table elsewhere on a non-monster page (e.g. a guide
     // discussing a monster's HP) is far less likely to also carry a
     // matching Combat level row right next to it.
-    if (hitpoints > 0 && combatLevel > 0) return { hitpoints, defence, attack, strength, combatLevel };
+    if (hitpoints > 0 && combatLevel > 0) return { hitpoints, defence, attack, strength, maxHit, combatLevel };
   }
   return null;
 }
@@ -80,6 +83,7 @@ export async function fetchMonsterEntry(name: string): Promise<MonsterEntry | nu
     defence: stats.defence,
     attack: stats.attack,
     strength: stats.strength,
+    maxHit: stats.maxHit,
     combatLevel: stats.combatLevel,
     xpPerKill: stats.hitpoints * XP_PER_HP,
     lookup: buildLookup(name, name, html),
