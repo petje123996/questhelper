@@ -11,8 +11,8 @@ import type { Player, Lookup } from "@/lib/quest";
 import { fetchTrainingCandidates, isNonMonsterName } from "@/lib/training";
 import { debugMonsterPage, fetchMonsterEntries } from "@/lib/monsters";
 import type { MonsterDebug } from "@/lib/monsters";
-import { fetchBestiaryRows } from "@/lib/bestiary";
-import type { BracketAttempt } from "@/lib/bestiary";
+import { debugBestiaryPage, fetchBestiaryRows } from "@/lib/bestiary";
+import type { BestiaryDebug, BracketAttempt } from "@/lib/bestiary";
 import { mapHref } from "@/lib/map";
 import { fmtNum, wikiUrl } from "@/lib/format";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
@@ -40,6 +40,8 @@ export default function CombatAdviserPage() {
   const [debug, setDebug] = useState<MonsterDebug[] | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const [bracketAttempts, setBracketAttempts] = useState<BracketAttempt[] | null>(null);
+  const [bestiaryDebug, setBestiaryDebug] = useState<BestiaryDebug | null>(null);
+  const [bestiaryDebugOpen, setBestiaryDebugOpen] = useState(false);
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
@@ -66,6 +68,8 @@ export default function CombatAdviserPage() {
       setDebug(null);
       setDebugOpen(false);
       setBracketAttempts(null);
+      setBestiaryDebug(null);
+      setBestiaryDebugOpen(false);
       try {
         setLoadingLabel("Loading the bestiary…");
         const { rows, attempted } = await fetchBestiaryRows(combatLevel);
@@ -85,6 +89,11 @@ export default function CombatAdviserPage() {
         let found = Array.from(byName.values());
 
         if (!found.length) {
+          // Bracket pages were found but yielded no rows — dump the raw
+          // structure of the first one so a mismatch is directly visible.
+          const sampleTitle = attempted.find((a) => a.found)?.title;
+          if (sampleTitle) setBestiaryDebug(await debugBestiaryPage(sampleTitle));
+
           // Bestiary subpages didn't parse — fall back to harvesting
           // monster links from the training guides and reading each
           // one's own infobox (slower, but a different data source).
@@ -340,6 +349,65 @@ export default function CombatAdviserPage() {
                         {a.title}: {a.found ? `${a.rowCount} rows` : "page not found"}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {bestiaryDebug && (
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      onClick={() => setBestiaryDebugOpen(!bestiaryDebugOpen)}
+                      style={{
+                        background: "transparent",
+                        border: `1px solid ${C.border}`,
+                        color: C.gold,
+                        borderRadius: 8,
+                        padding: "7px 10px",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {bestiaryDebugOpen ? "Hide" : "🔧 Show"} raw bestiary page structure
+                    </button>
+                    {bestiaryDebugOpen && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: C.gold, marginBottom: 4 }}>
+                          {bestiaryDebug.title} — {bestiaryDebug.tableCount} table(s) found
+                        </div>
+                        {bestiaryDebug.headerDumps.map((line, i) => (
+                          <div key={i} style={{ fontSize: 11, color: C.textDim, marginBottom: 2 }}>
+                            {line}
+                          </div>
+                        ))}
+                        <div style={{ fontSize: 11, fontWeight: 700, color: C.gold, marginTop: 8, marginBottom: 4 }}>
+                          Raw HTML (first table, tap to select all for copying):
+                        </div>
+                        <pre
+                          onClick={(e) => {
+                            const sel = window.getSelection();
+                            const range = document.createRange();
+                            range.selectNodeContents(e.currentTarget);
+                            sel?.removeAllRanges();
+                            sel?.addRange(range);
+                          }}
+                          style={{
+                            fontSize: 10,
+                            color: C.textDim,
+                            background: C.bg,
+                            border: `1px solid ${C.borderSoft}`,
+                            borderRadius: 8,
+                            padding: 10,
+                            overflowX: "auto",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            maxHeight: 260,
+                            overflowY: "auto",
+                          }}
+                        >
+                          {bestiaryDebug.rawSnippet}
+                        </pre>
+                      </div>
+                    )}
                   </div>
                 )}
 

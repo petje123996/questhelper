@@ -121,6 +121,45 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
   return rows;
 }
 
+export type BestiaryDebug = {
+  title: string;
+  found: boolean;
+  tableCount: number;
+  headerDumps: string[];
+  rawSnippet: string;
+};
+
+// Diagnostic dump used only when a bracket page is found but yields zero
+// rows: shows every table's header labels (as our parser sees them) plus
+// a raw HTML snippet, so a structural mismatch (e.g. no <table> element
+// at all, or headers we're not recognising) can be seen directly.
+export async function debugBestiaryPage(title: string): Promise<BestiaryDebug> {
+  const html = await fetchPageHtml(title);
+  if (!html) return { title, found: false, tableCount: 0, headerDumps: [], rawSnippet: "" };
+
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const tables = Array.from(doc.body.querySelectorAll("table"));
+  const headerDumps = tables.slice(0, 5).map((t, i) => {
+    const headerRow = t.querySelector("tr");
+    const ths = headerRow ? Array.from(headerRow.querySelectorAll("th")) : [];
+    const labels = ths.map((th) => headerLabel(th) || "(empty)");
+    return `table ${i + 1} (${ths.length} th cells): ${labels.join(" | ") || "(no th cells found)"}`;
+  });
+
+  let rawSnippet: string;
+  if (tables[0]) {
+    rawSnippet = tables[0].outerHTML.slice(0, 1500);
+  } else {
+    const bodyHtml = doc.body.innerHTML;
+    const idx = bodyHtml.toLowerCase().indexOf("list");
+    rawSnippet =
+      "(no <table> elements found on the page at all)\n\n" +
+      (idx >= 0 ? bodyHtml.slice(Math.max(0, idx - 200), idx + 1500) : bodyHtml.slice(0, 1500));
+  }
+
+  return { title, found: true, tableCount: tables.length, headerDumps, rawSnippet };
+}
+
 export type BracketAttempt = { title: string; found: boolean; rowCount: number };
 export type BestiaryFetchResult = { rows: BestiaryRow[]; attempted: BracketAttempt[] };
 
