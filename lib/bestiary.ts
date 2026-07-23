@@ -121,19 +121,27 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
   return rows;
 }
 
-export async function fetchBestiaryRows(members: boolean, combatLevel: number): Promise<BestiaryRow[]> {
-  if (!members) {
-    const html = await fetchPageHtml("Bestiary/Free-to-play");
-    if (!html) return [];
-    return parseBestiaryTables(html, combatLevel);
-  }
+export type BracketAttempt = { title: string; found: boolean; rowCount: number };
+export type BestiaryFetchResult = { rows: BestiaryRow[]; attempted: BracketAttempt[] };
 
+// Members and F2P monsters turn out to be listed together on the same
+// per-level-bracket pages (distinguished by the Members column), so we
+// always fetch the same bracket pages and let the caller filter by mode
+// — no need for a separately-guessed F2P page title.
+export async function fetchBestiaryRows(combatLevel: number): Promise<BestiaryFetchResult> {
   const brackets = bracketsForLevel(combatLevel);
+  const attempted: BracketAttempt[] = [];
   const results = await Promise.all(
     brackets.map(async (b) => {
       const html = await fetchPageHtml(b.title);
-      return html ? parseBestiaryTables(html, b.mid) : [];
+      if (!html) {
+        attempted.push({ title: b.title, found: false, rowCount: 0 });
+        return [];
+      }
+      const rows = parseBestiaryTables(html, b.mid);
+      attempted.push({ title: b.title, found: true, rowCount: rows.length });
+      return rows;
     })
   );
-  return results.flat();
+  return { rows: results.flat(), attempted };
 }

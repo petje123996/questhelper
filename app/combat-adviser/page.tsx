@@ -8,10 +8,11 @@ import { C, frame, goldTitle, card, headBtn, bigBtn, chip } from "@/lib/theme";
 import { loadStored, saveStored } from "@/lib/storage";
 import { calcCombat, fetchLookup } from "@/lib/quest";
 import type { Player, Lookup } from "@/lib/quest";
-import { fetchTrainingCandidates, NON_MONSTER_NAME_PATTERN } from "@/lib/training";
+import { fetchTrainingCandidates, isNonMonsterName } from "@/lib/training";
 import { debugMonsterPage, fetchMonsterEntries } from "@/lib/monsters";
 import type { MonsterDebug } from "@/lib/monsters";
 import { fetchBestiaryRows } from "@/lib/bestiary";
+import type { BracketAttempt } from "@/lib/bestiary";
 import { mapHref } from "@/lib/map";
 import { fmtNum, wikiUrl } from "@/lib/format";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
@@ -38,6 +39,7 @@ export default function CombatAdviserPage() {
   const [picture, setPicture] = useState<{ name: string; lookup: Lookup | null; loading: boolean } | null>(null);
   const [debug, setDebug] = useState<MonsterDebug[] | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [bracketAttempts, setBracketAttempts] = useState<BracketAttempt[] | null>(null);
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
@@ -63,9 +65,11 @@ export default function CombatAdviserPage() {
       setError(null);
       setDebug(null);
       setDebugOpen(false);
+      setBracketAttempts(null);
       try {
         setLoadingLabel("Loading the bestiary…");
-        const rows = await fetchBestiaryRows(members, combatLevel);
+        const { rows, attempted } = await fetchBestiaryRows(combatLevel);
+        setBracketAttempts(attempted);
         const modeFiltered = rows.filter((r) => r.members === null || r.members === members);
         const byName = new Map<string, Entry>();
         modeFiltered.forEach((r) => {
@@ -90,7 +94,7 @@ export default function CombatAdviserPage() {
           setLoadingLabel(`Checking stats for ${names.length} monsters…`);
           const viaGuide = await fetchMonsterEntries(names);
           if (!viaGuide.length) {
-            const sample = names.filter((n) => !NON_MONSTER_NAME_PATTERN.test(n)).slice(0, 3);
+            const sample = names.filter((n) => !isNonMonsterName(n)).slice(0, 3);
             setDebug(await Promise.all(sample.map((n) => debugMonsterPage(n))));
             throw new Error(
               `Found ${names.length} candidate names (via training guide links), but couldn't read ` +
@@ -327,6 +331,17 @@ export default function CombatAdviserPage() {
               <div style={{ ...card, borderColor: C.red, padding: 16, color: C.parch }}>
                 <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>Couldn't load monster data</div>
                 {error}
+
+                {bracketAttempts && bracketAttempts.length > 0 && (
+                  <div style={{ marginTop: 10, fontSize: 11, color: C.textDim }}>
+                    <div style={{ fontWeight: 700, color: C.gold, marginBottom: 4 }}>Bestiary pages tried:</div>
+                    {bracketAttempts.map((a) => (
+                      <div key={a.title}>
+                        {a.title}: {a.found ? `${a.rowCount} rows` : "page not found"}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {debug && debug.length > 0 && (
                   <div style={{ marginTop: 12 }}>
