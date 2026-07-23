@@ -1,7 +1,7 @@
 import { cleanText } from "./format";
 import { buildLookup, fetchPageHtml } from "./quest";
 import type { Lookup } from "./quest";
-import { NON_MONSTER_NAME_PATTERN } from "./training";
+import { isNonMonsterName } from "./training";
 
 export type MonsterEntry = {
   name: string;
@@ -63,7 +63,7 @@ function parseMonsterInfobox(
 // "picture" button. Pages that aren't monsters (items, guides, etc. picked
 // up by the broad link harvest) simply return null here and get filtered.
 export async function fetchMonsterEntry(name: string): Promise<MonsterEntry | null> {
-  if (NON_MONSTER_NAME_PATTERN.test(name)) return null;
+  if (isNonMonsterName(name)) return null;
   const html = await fetchPageHtml(name);
   if (!html) return null;
   const stats = parseMonsterInfobox(html);

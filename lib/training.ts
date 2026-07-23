@@ -18,12 +18,23 @@ const GUIDES: { members: boolean; pages: string[]; searchTerm: string }[] = [
   },
 ];
 
-// Guide/meta pages that can get wiki-linked from within another guide
-// (e.g. a "see also") and would otherwise slip through as if they were a
+// Guide/meta pages (and skill pages, commonly linked from within a guide
+// like "you'll need 40 Attack") that can slip through as if they were a
 // monster, since they can still contain a table with a "Hitpoints"-ish
 // row somewhere in their own content.
-export const NON_MONSTER_NAME_PATTERN =
-  /training|guide|calculator|efficient|money making|slayer task|combat achievements?/i;
+const SKILL_NAMES = new Set([
+  "attack", "strength", "defence", "ranged", "prayer", "magic", "runecraft",
+  "hitpoints", "crafting", "mining", "smithing", "fishing", "cooking",
+  "firemaking", "woodcutting", "agility", "herblore", "thieving",
+  "fletching", "slayer", "farming", "construction", "hunter",
+]);
+
+export function isNonMonsterName(name: string): boolean {
+  return (
+    SKILL_NAMES.has(name.trim().toLowerCase()) ||
+    /training|guide|calculator|efficient|money making|slayer task|combat achievements?/i.test(name)
+  );
+}
 
 // Every monster mentioned in a guide's tables or lists is wiki-linked, so
 // harvesting all links (rather than trying to identify a "monster column"
