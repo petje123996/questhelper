@@ -1,17 +1,29 @@
 import { API, cleanText, fetchJson } from "./format";
 
+// Combat training isn't one master table — the wiki splits it into a
+// separate guide per combat style, discovered the hard way: guessing a
+// single "combat training" page instead surfaced these style guides as
+// *links* on a hub page, which then got mistaken for monsters themselves.
+// Fetch all style guides for the mode and merge whichever ones exist.
 const GUIDES: { members: boolean; pages: string[]; searchTerm: string }[] = [
   {
     members: false,
-    pages: ["Free-to-play combat training", "Money making guide/Free-to-play combat training"],
+    pages: ["Free-to-play melee training", "Free-to-play ranged training", "Free-to-play magic training"],
     searchTerm: "free-to-play combat training",
   },
   {
     members: true,
-    pages: ["Pay-to-play combat training", "Combat training"],
+    pages: ["Pay-to-play melee training", "Pay-to-play ranged training", "Pay-to-play magic training"],
     searchTerm: "pay-to-play combat training",
   },
 ];
+
+// Guide/meta pages that can get wiki-linked from within another guide
+// (e.g. a "see also") and would otherwise slip through as if they were a
+// monster, since they can still contain a table with a "Hitpoints"-ish
+// row somewhere in their own content.
+export const NON_MONSTER_NAME_PATTERN =
+  /training|guide|calculator|efficient|money making|slayer task|combat achievements?/i;
 
 // Every monster mentioned in a guide's tables or lists is wiki-linked, so
 // harvesting all links (rather than trying to identify a "monster column"
@@ -57,15 +69,16 @@ async function tryPageLinks(page: string): Promise<string[] | null> {
   }
 }
 
-// Try each known candidate title for the F2P/members guide, then fall
-// back to a wiki search so a wrong guess at the exact page title doesn't
-// break it (same pattern used for the clue solver's page lookups).
+// Fetch every known style guide for this mode (melee/ranged/magic) and
+// merge whichever ones actually exist, rather than stopping at the first
+// hit — they're complementary guides, not alternate titles for the same
+// page. Falls back to a wiki search only if none of them resolved at all.
 export async function fetchTrainingCandidates(members: boolean): Promise<string[]> {
   const guide = GUIDES.find((g) => g.members === members)!;
-  for (const page of guide.pages) {
-    const found = await tryPageLinks(page);
-    if (found) return found;
-  }
+  const results = await Promise.all(guide.pages.map((p) => tryPageLinks(p)));
+  const merged = Array.from(new Set(results.filter((r): r is string[] => r !== null).flat()));
+  if (merged.length) return merged;
+
   try {
     const search = await fetchJson(
       `${API}?action=opensearch&format=json&origin=*&limit=5&search=${encodeURIComponent(guide.searchTerm)}`

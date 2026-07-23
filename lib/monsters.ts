@@ -1,6 +1,7 @@
 import { cleanText } from "./format";
 import { buildLookup, fetchPageHtml } from "./quest";
 import type { Lookup } from "./quest";
+import { NON_MONSTER_NAME_PATTERN } from "./training";
 
 export type MonsterEntry = {
   name: string;
@@ -47,7 +48,11 @@ function parseMonsterInfobox(
       else if (label.startsWith("defence")) defence = Math.max(defence, num);
       else if (label.includes("combat level")) combatLevel = Math.max(combatLevel, num);
     });
-    if (hitpoints > 0) return { hitpoints, defence, combatLevel };
+    // Require both Hitpoints and Combat level in the same table — a
+    // content table elsewhere on a non-monster page (e.g. a guide
+    // discussing a monster's HP) is far less likely to also carry a
+    // matching Combat level row right next to it.
+    if (hitpoints > 0 && combatLevel > 0) return { hitpoints, defence, combatLevel };
   }
   return null;
 }
@@ -58,6 +63,7 @@ function parseMonsterInfobox(
 // "picture" button. Pages that aren't monsters (items, guides, etc. picked
 // up by the broad link harvest) simply return null here and get filtered.
 export async function fetchMonsterEntry(name: string): Promise<MonsterEntry | null> {
+  if (NON_MONSTER_NAME_PATTERN.test(name)) return null;
   const html = await fetchPageHtml(name);
   if (!html) return null;
   const stats = parseMonsterInfobox(html);
