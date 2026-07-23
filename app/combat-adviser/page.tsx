@@ -194,14 +194,17 @@ export default function CombatAdviserPage() {
     return { attackWeight, defenceWeight };
   }, [player, accountType]);
 
-  // Score each monster by hitpoints (more HP ≈ more combat XP per kill,
-  // and more kills survivable per trip) against how hard it hits back and
-  // how much Defence it takes to actually land hits on it, weighted by
-  // what actually matters for THIS player's own combat stats (see
-  // `weights` above) — as high as possible HP, as low as possible Attack
-  // and Defence, but "as low as possible" means more for a squishy/pure
-  // account than a tanky one. Monsters with an unknown Attack/Defence (-1,
-  // column missing on that table) are scored as worst-case rather than
+  // Score each monster with Hitpoints (≈ XP/kill) as the PRIMARY factor —
+  // the recommendation should be "the most HP you can get", not "the
+  // safest monster available" — and Attack/Defence as secondary
+  // deductions on top, weighted by what actually matters for THIS
+  // player's own combat stats (see `weights` above). This has to be an
+  // additive score (hp*10 - penalties), not a ratio: dividing HP by
+  // (1 + stats) let a high-Defence/Attack monster's penalty overwhelm a
+  // much bigger HP advantage, e.g. a 50 HP monster losing to a 10 HP one
+  // just for being statistically "safer" — exactly the opposite of what
+  // was asked for. Monsters with an unknown Attack/Defence (-1, column
+  // missing on that table) are scored as worst-case rather than
   // best-case, so missing data can't falsely push them to the top.
   const { best, alternatives } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
@@ -227,8 +230,9 @@ export default function CombatAdviserPage() {
     const pool = trainable.length ? trainable : levelPool;
     const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
     const { attackWeight, defenceWeight } = weights;
+    const HP_WEIGHT = 10; // keeps Hitpoints dominant over the Attack/Defence penalty below
     const score = (e: Entry) =>
-      e.hitpoints / (1 + statOrWorst(e.defence) * defenceWeight + statOrWorst(e.attack) * attackWeight);
+      e.hitpoints * HP_WEIGHT - (statOrWorst(e.defence) * defenceWeight + statOrWorst(e.attack) * attackWeight);
     const ranked = [...pool].sort((a, b) => score(b) - score(a));
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1) };
   }, [entries, combatLevel, weights]);
@@ -536,11 +540,11 @@ export default function CombatAdviserPage() {
                 {alternatives.map((e) => monsterCard(e, false))}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  From the wiki's Bestiary for your level range, ranked by highest Hitpoints (≈ XP value
-                  per kill) against lowest Attack and Defence, weighted to your own stats — the lower your
-                  Defence, the more a monster's Attack counts against it; the lower your offence, the more
-                  its Defence does. One-hit joke monsters (very low HP relative to the best options here)
-                  are filtered out — they're not worth fighting regardless of how weak their stats look.
+                  From the wiki's Bestiary for your level range, ranked primarily by highest Hitpoints
+                  (≈ XP value per kill), with lowest Attack and Defence as a secondary factor weighted to
+                  your own stats — the lower your Defence, the more a monster's Attack counts against it;
+                  the lower your offence, the more its Defence does. One-hit joke monsters (very low HP
+                  relative to the best options here) are filtered out.
                 </div>
                 {membershipCounts && (
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 4, opacity: 0.7 }}>
