@@ -141,11 +141,20 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
         const cbText = cbIdx >= 0 ? cleanText(cells[cbIdx]?.textContent || "") : "";
         const combatLevel = firstNumber(cbText) || fallbackLevel;
 
+        // Require an explicit signal either way rather than defaulting an
+        // unrecognised label to "members" — an icon/label whose exact
+        // wording we don't recognise (e.g. some F2P-only marker that
+        // doesn't literally say "f2p" or "free") must not get silently
+        // lumped in with Members, since that's exactly the kind of bug
+        // that makes every monster look like a Members monster and the
+        // F2P toggle come back empty.
         let members: boolean | null = null;
         if (membersIdx >= 0 && cells[membersIdx]) {
           const cell = cells[membersIdx];
           const label = headerLabel(cell) || cleanText(cell.textContent || "").toLowerCase();
-          if (label) members = !/f2p|free/.test(label);
+          if (/f2p|free|non.?member/.test(label)) members = false;
+          else if (/\bmember|p2p|paid/.test(label)) members = true;
+          else if (label) members = null; // unrecognised text — don't guess
           else if (cell.querySelector("img, svg")) members = true;
         }
 
@@ -196,7 +205,12 @@ export async function debugBestiaryPage(title: string): Promise<BestiaryDebug> {
 }
 
 export type BracketAttempt = { title: string; found: boolean; rowCount: number };
-export type BestiaryFetchResult = { rows: BestiaryRow[]; attempted: BracketAttempt[] };
+export type MembershipCounts = { members: number; f2p: number; unknown: number };
+export type BestiaryFetchResult = {
+  rows: BestiaryRow[];
+  attempted: BracketAttempt[];
+  membershipCounts: MembershipCounts;
+};
 
 // Members and F2P monsters turn out to be listed together on the same
 // per-level-bracket pages (distinguished by the Members column), so we
@@ -217,5 +231,12 @@ export async function fetchBestiaryRows(combatLevel: number): Promise<BestiaryFe
       return rows;
     })
   );
-  return { rows: results.flat(), attempted };
+  const rows = results.flat();
+  const membershipCounts: MembershipCounts = { members: 0, f2p: 0, unknown: 0 };
+  rows.forEach((r) => {
+    if (r.members === true) membershipCounts.members++;
+    else if (r.members === false) membershipCounts.f2p++;
+    else membershipCounts.unknown++;
+  });
+  return { rows, attempted, membershipCounts };
 }

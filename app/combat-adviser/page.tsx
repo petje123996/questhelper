@@ -12,7 +12,7 @@ import { fetchTrainingCandidates, isNonMonsterName } from "@/lib/training";
 import { debugMonsterPage, fetchMonsterEntries } from "@/lib/monsters";
 import type { MonsterDebug } from "@/lib/monsters";
 import { debugBestiaryPage, fetchBestiaryRows } from "@/lib/bestiary";
-import type { BestiaryDebug, BracketAttempt } from "@/lib/bestiary";
+import type { BestiaryDebug, BracketAttempt, MembershipCounts } from "@/lib/bestiary";
 import { mapHref } from "@/lib/map";
 import { fmtNum, wikiUrl } from "@/lib/format";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
@@ -55,6 +55,7 @@ export default function CombatAdviserPage() {
   const [bracketAttempts, setBracketAttempts] = useState<BracketAttempt[] | null>(null);
   const [bestiaryDebug, setBestiaryDebug] = useState<BestiaryDebug | null>(null);
   const [bestiaryDebugOpen, setBestiaryDebugOpen] = useState(false);
+  const [membershipCounts, setMembershipCounts] = useState<MembershipCounts | null>(null);
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
@@ -68,10 +69,11 @@ export default function CombatAdviserPage() {
 
   useEffect(() => {
     if (combatLevel === null) return;
-    // v2: entries now carry an "attack" field — versioned so caches saved
-    // before that field existed (undefined attack -> NaN in the score)
-    // don't get reused as-is.
-    const cacheKey = `qh-bestiary-v2-${members ? "p2p" : "f2p"}-${Math.floor(combatLevel / 10)}`;
+    // v3: fixed the Members/F2P column classification (an unrecognised
+    // label used to default to "members", which could make every monster
+    // look like a Members monster and leave F2P mode empty) — versioned so
+    // a cache built under the old, wrong classification isn't reused.
+    const cacheKey = `qh-bestiary-v3-${members ? "p2p" : "f2p"}-${Math.floor(combatLevel / 10)}`;
     setEntries(null);
     const cached = loadStored(cacheKey);
     if (cached && Array.isArray(cached.entries) && cached.entries.length > 0) {
@@ -86,10 +88,12 @@ export default function CombatAdviserPage() {
       setBracketAttempts(null);
       setBestiaryDebug(null);
       setBestiaryDebugOpen(false);
+      setMembershipCounts(null);
       try {
         setLoadingLabel("Loading the bestiary…");
-        const { rows, attempted } = await fetchBestiaryRows(combatLevel);
+        const { rows, attempted, membershipCounts: counts } = await fetchBestiaryRows(combatLevel);
         setBracketAttempts(attempted);
+        setMembershipCounts(counts);
         const modeFiltered = rows.filter((r) => r.members === null || r.members === members);
         const byName = new Map<string, Entry>();
         modeFiltered.forEach((r) => {
@@ -525,6 +529,12 @@ export default function CombatAdviserPage() {
                   Defence, the more a monster's Attack counts against it; the lower your offence, the more
                   its Defence does.
                 </div>
+                {membershipCounts && (
+                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 4, opacity: 0.7 }}>
+                    Bestiary column check: {membershipCounts.members} members-only, {membershipCounts.f2p}{" "}
+                    F2P, {membershipCounts.unknown} unclear.
+                  </div>
+                )}
               </>
             )}
           </>
