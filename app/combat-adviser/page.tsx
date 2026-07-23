@@ -60,7 +60,12 @@ export default function CombatAdviserPage() {
         if (!names.length) throw new Error("No training guide found on the wiki.");
         setLoadingLabel(`Checking stats for ${Math.min(names.length, 45)} monsters…`);
         const found = await fetchMonsterEntries(names);
-        if (!found.length) throw new Error("Couldn't read monster stats from the wiki.");
+        if (!found.length) {
+          throw new Error(
+            `Found ${Math.min(names.length, 45)} candidate names on the guide, but couldn't read ` +
+              "monster stats from any of their wiki pages."
+          );
+        }
         setEntries(found);
         saveStored(cacheKey, { ts: Date.now(), entries: found });
       } catch (e: any) {
