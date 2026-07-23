@@ -147,8 +147,9 @@ export default function CombatAdviserPage() {
     })();
   }, [members, combatLevel]);
 
-  // Rough "pure" heuristic: Defence well below your offensive stats.
-  // Best-effort only — used for a note, not to change the ranking.
+  // Rough "pure" heuristic: Defence well below your offensive stats. Shown
+  // as a note; the actual ranking below picks up the same underlying stats
+  // directly rather than branching on this boolean.
   const isPure = useMemo(() => {
     if (!player) return false;
     const def = player.skills.defence ?? 1;
@@ -161,16 +162,43 @@ export default function CombatAdviserPage() {
     return def <= 20 && offence - def >= 15;
   }, [player]);
 
+  // How much a monster's Attack/Defence should count against it depends on
+  // the player fighting it, not just the monster: a low-Defence account
+  // (a pure, most extremely) takes real risk from a hard-hitting monster,
+  // so monster Attack should be weighted heavily for them — a tanky
+  // high-Defence account can shrug the same hits off, so it barely matters.
+  // Symmetrically, a low-offence account struggles to punch through a
+  // high-Defence monster (slow kills, more food/time spent), so monster
+  // Defence should count for more against them than it does for a
+  // high-offence account that kills anything quickly regardless. Hardcore
+  // Ironman gets extra weight on Attack on top of that, since a death is
+  // unrecoverable regardless of how tanky the stats look on paper.
+  const weights = useMemo(() => {
+    if (!player) return { attackWeight: 1, defenceWeight: 1 };
+    const def = player.skills.defence ?? 1;
+    const offence = Math.max(
+      player.skills.attack ?? 1,
+      player.skills.strength ?? 1,
+      player.skills.ranged ?? 1,
+      player.skills.magic ?? 1
+    );
+    const defenceRatio = Math.min(1, def / 60);
+    const offenceRatio = Math.min(1, offence / 60);
+    let attackWeight = 1 + (1 - defenceRatio) * 3; // 1 (tanky) .. 4 (pure)
+    const defenceWeight = 1 + (1 - offenceRatio) * 2; // 1 (strong offence) .. 3 (weak offence)
+    if (accountType === "hcim") attackWeight *= 1.5; // permadeath: extra caution
+    return { attackWeight, defenceWeight };
+  }, [player, accountType]);
+
   // Score each monster by hitpoints (more HP ≈ more combat XP per kill,
   // and more kills survivable per trip) against how hard it hits back and
-  // how much Defence it takes to actually land hits on it: as high as
-  // possible HP, as low as possible Attack and Defence — this matters most
-  // for a pure/low-Defence account, whose own combat level under-sells how
-  // much they can safely fight, but low own-Defence combined with high
-  // offence generally makes it the right call for anyone. Monsters with an
-  // unknown Attack/Defence (-1, column missing on that table) are scored
-  // as worst-case rather than best-case, so missing data can't falsely
-  // push them to the top.
+  // how much Defence it takes to actually land hits on it, weighted by
+  // what actually matters for THIS player's own combat stats (see
+  // `weights` above) — as high as possible HP, as low as possible Attack
+  // and Defence, but "as low as possible" means more for a squishy/pure
+  // account than a tanky one. Monsters with an unknown Attack/Defence (-1,
+  // column missing on that table) are scored as worst-case rather than
+  // best-case, so missing data can't falsely push them to the top.
   const { best, alternatives } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
       return { best: null as Entry | null, alternatives: [] as Entry[] };
@@ -182,10 +210,12 @@ export default function CombatAdviserPage() {
     );
     const pool = inRange.length ? inRange : entries;
     const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
-    const score = (e: Entry) => e.hitpoints / (1 + statOrWorst(e.defence) + statOrWorst(e.attack));
+    const { attackWeight, defenceWeight } = weights;
+    const score = (e: Entry) =>
+      e.hitpoints / (1 + statOrWorst(e.defence) * defenceWeight + statOrWorst(e.attack) * attackWeight);
     const ranked = [...pool].sort((a, b) => score(b) - score(a));
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1) };
-  }, [entries, combatLevel]);
+  }, [entries, combatLevel, weights]);
 
   const openPicture = async (name: string) => {
     setPicture({ name, lookup: null, loading: true });
@@ -491,8 +521,9 @@ export default function CombatAdviserPage() {
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
                   From the wiki's Bestiary for your level range, ranked by highest Hitpoints (≈ XP value
-                  per kill) against lowest Attack and Defence — best options for landing hits fast and
-                  taking few back are at the top.
+                  per kill) against lowest Attack and Defence, weighted to your own stats — the lower your
+                  Defence, the more a monster's Attack counts against it; the lower your offence, the more
+                  its Defence does.
                 </div>
               </>
             )}
