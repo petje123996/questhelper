@@ -24,3 +24,16 @@ export function removeStored(key: string): void {
 }
 
 export const storageKey = (name: string) => "qh-quest-" + name.replace(/[\s/\\'"]+/g, "_");
+
+export function removeStoredByPrefix(prefix: string): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix)) keys.push(k);
+    }
+    keys.forEach((k) => localStorage.removeItem(k));
+  } catch {
+    /* storage unavailable */
+  }
+}
