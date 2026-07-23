@@ -20,6 +20,7 @@ import {
 import { loadStored, saveStored, removeStored, storageKey } from "@/lib/storage";
 import { API, capitalize, fmtNum, fetchJson, normalizeSkill, resolveSrc, wikiUrl } from "@/lib/format";
 import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords } from "@/lib/quest";
+import { mapHref } from "@/lib/map";
 import type {
   SkillReq,
   Meta,
@@ -424,14 +425,7 @@ export default function QuestHelper() {
     plane?: number;
     mapId?: number;
   }) => {
-    const params = new URLSearchParams();
-    params.set("x", String(Math.round(target.x)));
-    params.set("y", String(Math.round(target.y)));
-    params.set("title", target.title);
-    if (target.marker) params.set("marker", "1");
-    if (target.plane !== undefined) params.set("plane", String(target.plane));
-    if (target.mapId !== undefined) params.set("mapId", String(target.mapId));
-    router.push(`/map?${params.toString()}`);
+    router.push(mapHref(target));
   };
 
   const openQuest = async (name: string) => {

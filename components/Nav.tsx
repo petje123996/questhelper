@@ -10,6 +10,8 @@ const LINKS: { href: string; label: string; icon: string }[] = [
   { href: "/map", label: "World map", icon: "🗺️" },
   { href: "/prices", label: "GE Prices", icon: "💰" },
   { href: "/diaries", label: "Achievement Diaries", icon: "📔" },
+  { href: "/combat-achievements", label: "Combat Achievements", icon: "🗡️" },
+  { href: "/clues", label: "Clue Solver", icon: "🧩" },
   { href: "/profile", label: "Profile", icon: "👤" },
 ];
 
