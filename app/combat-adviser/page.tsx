@@ -6,18 +6,19 @@ import { useRouter } from "next/navigation";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn, chip } from "@/lib/theme";
 import { loadStored, saveStored } from "@/lib/storage";
-import { calcCombat } from "@/lib/quest";
+import { calcCombat, fetchLookup } from "@/lib/quest";
 import type { Player, Lookup } from "@/lib/quest";
 import { fetchTrainingCandidates, NON_MONSTER_NAME_PATTERN } from "@/lib/training";
 import { debugMonsterPage, fetchMonsterEntries } from "@/lib/monsters";
-import type { MonsterDebug, MonsterEntry } from "@/lib/monsters";
-import { fetchBestiary } from "@/lib/bestiary";
+import type { MonsterDebug } from "@/lib/monsters";
+import { fetchBestiaryRows } from "@/lib/bestiary";
 import { mapHref } from "@/lib/map";
 import { fmtNum, wikiUrl } from "@/lib/format";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
 import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 type AccountType = "main" | "ironman" | "hcim";
+type Entry = { name: string; hitpoints: number; defence: number; combatLevel: number; xpPerKill: number };
 
 const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
   { id: "main", label: "Main" },
@@ -30,11 +31,11 @@ export default function CombatAdviserPage() {
   const [player, setPlayer] = useState<Player | null>(null);
   const [members, setMembers] = useState(true);
   const [accountType, setAccountType] = useState<AccountType>("main");
-  const [entries, setEntries] = useState<MonsterEntry[] | null>(null);
+  const [entries, setEntries] = useState<Entry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [picture, setPicture] = useState<{ name: string; lookup: Lookup } | null>(null);
+  const [picture, setPicture] = useState<{ name: string; lookup: Lookup | null; loading: boolean } | null>(null);
   const [debug, setDebug] = useState<MonsterDebug[] | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
 
@@ -46,8 +47,11 @@ export default function CombatAdviserPage() {
   useCloseOnBack(!!picture, () => setPicture(null));
   useLockBodyScroll(!!picture);
 
+  const combatLevel = player ? calcCombat(player.skills) : null;
+
   useEffect(() => {
-    const cacheKey = `qh-monsters-${members ? "p2p" : "f2p"}`;
+    if (combatLevel === null) return;
+    const cacheKey = `qh-bestiary-${members ? "p2p" : "f2p"}-${Math.floor(combatLevel / 10)}`;
     setEntries(null);
     const cached = loadStored(cacheKey);
     if (cached && Array.isArray(cached.entries) && cached.entries.length > 0) {
@@ -60,38 +64,48 @@ export default function CombatAdviserPage() {
       setDebug(null);
       setDebugOpen(false);
       try {
-        let names: string[] = [];
-        let source = "";
+        setLoadingLabel("Loading the bestiary…");
+        const rows = await fetchBestiaryRows(members, combatLevel);
+        const modeFiltered = rows.filter((r) => r.members === null || r.members === members);
+        const byName = new Map<string, Entry>();
+        modeFiltered.forEach((r) => {
+          if (byName.has(r.name)) return;
+          byName.set(r.name, {
+            name: r.name,
+            hitpoints: r.hitpoints,
+            defence: r.defence,
+            combatLevel: r.combatLevel,
+            xpPerKill: r.hitpoints * 4,
+          });
+        });
+        let found = Array.from(byName.values());
 
-        setLoadingLabel("Loading the monster bestiary…");
-        const bestiaryRows = await fetchBestiary();
-        if (bestiaryRows.length >= 15) {
-          const modeFiltered = bestiaryRows.filter((r) => r.members === null || r.members === members);
-          names = modeFiltered
-            .sort((a, b) => b.hitpoints - a.hitpoints)
-            .slice(0, 45)
-            .map((r) => r.name);
-          source = `Bestiary (${bestiaryRows.length} rows found)`;
-        }
-
-        if (!names.length) {
-          setLoadingLabel("Bestiary unavailable — reading the training guide instead…");
-          names = await fetchTrainingCandidates(members);
-          source = "training guide links";
-        }
-
-        if (!names.length) throw new Error("No monster data found on the wiki.");
-
-        setLoadingLabel(`Checking stats for ${names.length} monsters…`);
-        const found = await fetchMonsterEntries(names);
         if (!found.length) {
-          const sample = names.filter((n) => !NON_MONSTER_NAME_PATTERN.test(n)).slice(0, 3);
-          setDebug(await Promise.all(sample.map((n) => debugMonsterPage(n))));
-          throw new Error(
-            `Found ${names.length} candidate names (via ${source}), but couldn't read monster stats ` +
-              "from any of their wiki pages."
-          );
+          // Bestiary subpages didn't parse — fall back to harvesting
+          // monster links from the training guides and reading each
+          // one's own infobox (slower, but a different data source).
+          setLoadingLabel("Bestiary unavailable — reading the training guide instead…");
+          const names = await fetchTrainingCandidates(members);
+          if (!names.length) throw new Error("No monster data found on the wiki.");
+          setLoadingLabel(`Checking stats for ${names.length} monsters…`);
+          const viaGuide = await fetchMonsterEntries(names);
+          if (!viaGuide.length) {
+            const sample = names.filter((n) => !NON_MONSTER_NAME_PATTERN.test(n)).slice(0, 3);
+            setDebug(await Promise.all(sample.map((n) => debugMonsterPage(n))));
+            throw new Error(
+              `Found ${names.length} candidate names (via training guide links), but couldn't read ` +
+                "monster stats from any of their wiki pages."
+            );
+          }
+          found = viaGuide.map((e) => ({
+            name: e.name,
+            hitpoints: e.hitpoints,
+            defence: e.defence,
+            combatLevel: e.combatLevel,
+            xpPerKill: e.xpPerKill,
+          }));
         }
+
         setEntries(found);
         saveStored(cacheKey, { ts: Date.now(), entries: found });
       } catch (e: any) {
@@ -100,9 +114,7 @@ export default function CombatAdviserPage() {
         setLoading(false);
       }
     })();
-  }, [members]);
-
-  const combatLevel = player ? calcCombat(player.skills) : null;
+  }, [members, combatLevel]);
 
   // Rough "pure" heuristic: Defence well below your offensive stats.
   // Best-effort only — used for a note, not to change the ranking.
@@ -121,10 +133,10 @@ export default function CombatAdviserPage() {
   // Basis: hitpoints × XP-per-hitpoint picks which monsters are worth
   // fighting at all (higher HP ≈ more combat XP per kill); the final
   // display order is then lowest Defence first (easiest/fastest to hit),
-  // highest last.
+  // highest last. Monsters with unknown Defence (-1) sort to the end.
   const { best, alternatives } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
-      return { best: null as MonsterEntry | null, alternatives: [] as MonsterEntry[] };
+      return { best: null as Entry | null, alternatives: [] as Entry[] };
     }
     const levelMin = Math.max(1, combatLevel - 60);
     const levelMax = combatLevel + 20;
@@ -133,11 +145,21 @@ export default function CombatAdviserPage() {
     );
     const pool = inRange.length ? inRange : entries;
     const byValue = [...pool].sort((a, b) => b.xpPerKill - a.xpPerKill).slice(0, 15);
-    const ranked = byValue.sort((a, b) => a.defence - b.defence);
+    const ranked = byValue.sort((a, b) => {
+      const da = a.defence < 0 ? Infinity : a.defence;
+      const db = b.defence < 0 ? Infinity : b.defence;
+      return da - db;
+    });
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1, 6) };
   }, [entries, combatLevel]);
 
-  const monsterCard = (e: MonsterEntry, highlight: boolean) => (
+  const openPicture = async (name: string) => {
+    setPicture({ name, lookup: null, loading: true });
+    const lookup = await fetchLookup(name, name);
+    setPicture({ name, lookup, loading: false });
+  };
+
+  const monsterCard = (e: Entry, highlight: boolean) => (
     <div
       key={e.name}
       style={{
@@ -154,46 +176,40 @@ export default function CombatAdviserPage() {
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ ...(highlight ? { ...goldTitle, fontSize: 20 } : {}), color: highlight ? undefined : C.parch, fontWeight: 700, fontSize: highlight ? 20 : 15 }}>
+        <span
+          style={{
+            ...(highlight ? { ...goldTitle, fontSize: 20 } : {}),
+            color: highlight ? undefined : C.parch,
+            fontWeight: 700,
+            fontSize: highlight ? 20 : 15,
+          }}
+        >
           {e.name}
         </span>
-        {e.combatLevel > 0 && (
-          <span style={{ fontSize: 12, color: C.textDim }}>Lvl {e.combatLevel}</span>
-        )}
+        {e.combatLevel > 0 && <span style={{ fontSize: 12, color: C.textDim }}>Lvl {e.combatLevel}</span>}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
         <span style={chip}>❤️ {fmtNum(e.hitpoints)} HP</span>
-        <span style={chip}>🛡️ {fmtNum(e.defence)} Def</span>
+        <span style={chip}>🛡️ {e.defence < 0 ? "?" : fmtNum(e.defence)} Def</span>
         <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        {e.lookup.coords && (
-          <button
-            onClick={() =>
-              router.push(
-                mapHref({
-                  x: e.lookup.coords!.x,
-                  y: e.lookup.coords!.y,
-                  title: e.name,
-                  marker: true,
-                  plane: e.lookup.coords!.plane,
-                  mapId: e.lookup.coords!.mapId,
-                })
-              )
-            }
-            style={{ flex: 1, padding: "8px 10px", fontSize: 12, fontWeight: 700, background: C.gold, color: C.ink, border: "none", borderRadius: 10, cursor: "pointer" }}
-          >
-            🗺️ Location
-          </button>
-        )}
-        {e.lookup.images.length > 0 && (
-          <button
-            onClick={() => setPicture({ name: e.name, lookup: e.lookup })}
-            style={{ flex: 1, padding: "8px 10px", fontSize: 12, fontWeight: 700, background: "transparent", color: C.gold, border: `1px solid ${C.border}`, borderRadius: 10, cursor: "pointer" }}
-          >
-            🖼️ Picture
-          </button>
-        )}
+        <button
+          onClick={() => openPicture(e.name)}
+          style={{
+            flex: 1,
+            padding: "8px 10px",
+            fontSize: 12,
+            fontWeight: 700,
+            background: "transparent",
+            color: C.gold,
+            border: `1px solid ${C.border}`,
+            borderRadius: 10,
+            cursor: "pointer",
+          }}
+        >
+          🖼️ Picture / location
+        </button>
       </div>
     </div>
   );
@@ -309,9 +325,7 @@ export default function CombatAdviserPage() {
 
             {error && !loading && (
               <div style={{ ...card, borderColor: C.red, padding: 16, color: C.parch }}>
-                <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>
-                  Couldn't load the training guide
-                </div>
+                <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>Couldn't load monster data</div>
                 {error}
 
                 {debug && debug.length > 0 && (
@@ -369,8 +383,8 @@ export default function CombatAdviserPage() {
                 {alternatives.map((e) => monsterCard(e, false))}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  Picked from the wiki's {members ? "Pay-to-play" : "Free-to-play"} Combat Training guide by
-                  hitpoints (≈ XP value per kill), ordered lowest Defence first.
+                  Picked from the wiki's Bestiary by hitpoints (≈ XP value per kill), ordered lowest
+                  Defence first.
                 </div>
               </>
             )}
@@ -409,12 +423,27 @@ export default function CombatAdviserPage() {
               <div style={{ ...goldTitle, fontSize: 17, fontWeight: 700 }}>🔍 {picture.name}</div>
               <button
                 onClick={() => setPicture(null)}
-                style={{ width: 32, height: 32, borderRadius: "50%", background: C.panelSoft, color: C.parch, border: `1px solid ${C.border}`, fontSize: 14, cursor: "pointer", lineHeight: 1 }}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: "50%",
+                  background: C.panelSoft,
+                  color: C.parch,
+                  border: `1px solid ${C.border}`,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  lineHeight: 1,
+                }}
               >
                 ✕
               </button>
             </div>
-            {picture.lookup.images.map((src) => (
+
+            {picture.loading && (
+              <div style={{ color: C.textDim, padding: "20px 0", textAlign: "center" }}>Searching the wiki…</div>
+            )}
+
+            {!picture.loading && picture.lookup?.images.map((src) => (
               <img
                 key={src}
                 src={src}
@@ -422,14 +451,42 @@ export default function CombatAdviserPage() {
                 style={{ width: "100%", borderRadius: 10, marginBottom: 10, border: `1px solid ${C.borderSoft}` }}
               />
             ))}
-            <a
-              href={wikiUrl(picture.name)}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ display: "block", textAlign: "center", padding: "12px", background: C.panelSoft, color: C.gold, border: `1px solid ${C.border}`, borderRadius: 10, textDecoration: "none", fontWeight: 600, fontSize: 14 }}
-            >
-              Open on wiki ↗
-            </a>
+
+            {!picture.loading && picture.lookup?.coords && (
+              <button
+                onClick={() => {
+                  const c = picture.lookup!.coords!;
+                  const name = picture.name;
+                  setPicture(null);
+                  router.push(mapHref({ x: c.x, y: c.y, title: name, marker: true, plane: c.plane, mapId: c.mapId }));
+                }}
+                style={{ ...bigBtn, marginBottom: 12 }}
+              >
+                🗺️ Show on map
+              </button>
+            )}
+
+            {!picture.loading && (
+              <a
+                href={wikiUrl(picture.name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "block",
+                  textAlign: "center",
+                  padding: "12px",
+                  background: C.panelSoft,
+                  color: C.gold,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  textDecoration: "none",
+                  fontWeight: 600,
+                  fontSize: 14,
+                }}
+              >
+                Open on wiki ↗
+              </a>
+            )}
           </div>
         </div>
       )}
