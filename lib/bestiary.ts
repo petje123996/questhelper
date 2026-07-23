@@ -9,6 +9,7 @@ export type BestiaryRow = {
   defence: number;
   attack: number;
   strength: number;
+  maxHit: number;
 };
 
 // The full (members) bestiary isn't one table — it's split into a
@@ -109,7 +110,12 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
           !h.includes("heavy"))
     );
     const atkIdx = labels.findIndex((h) => h.includes("attack level"));
-    const strIdx = labels.findIndex((h) => h.includes("strength level"));
+    // Real column wording for Strength varies (seen without the "level"
+    // suffix), so match on the word alone — nothing else in a monster
+    // Bestiary table collides with "strength" the way "defence" collides
+    // with combat-style Defence bonus columns above.
+    const strIdx = labels.findIndex((h) => h.includes("strength"));
+    const maxHitIdx = labels.findIndex((h) => h.includes("max hit") || h.includes("maximum hit"));
     const cbIdx = labels.findIndex((h) => h.includes("combat level") || h === "combat");
     const membersIdx = labels.findIndex((h) => h.includes("member") || h.includes("f2p"));
 
@@ -141,6 +147,7 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
         const defence = defIdx >= 0 ? firstNumber(cleanText(cells[defIdx]?.textContent || "")) : -1;
         const attack = atkIdx >= 0 ? firstNumber(cleanText(cells[atkIdx]?.textContent || "")) : -1;
         const strength = strIdx >= 0 ? firstNumber(cleanText(cells[strIdx]?.textContent || "")) : -1;
+        const maxHit = maxHitIdx >= 0 ? firstNumber(cleanText(cells[maxHitIdx]?.textContent || "")) : -1;
         const cbText = cbIdx >= 0 ? cleanText(cells[cbIdx]?.textContent || "") : "";
         const combatLevel = firstNumber(cbText) || fallbackLevel;
 
@@ -161,7 +168,7 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
           else if (cell.querySelector("img, svg")) members = true;
         }
 
-        rows.push({ name, members, combatLevel, hitpoints, defence, attack, strength });
+        rows.push({ name, members, combatLevel, hitpoints, defence, attack, strength, maxHit });
       });
   });
 
