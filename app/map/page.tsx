@@ -1,11 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, headBtn, card } from "@/lib/theme";
 import { loadStored, saveStored } from "@/lib/storage";
+import { useCloseOnBack } from "@/hooks/useCloseOnBack";
+import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 import {
   TILES,
   F2P_RECTS,
@@ -68,6 +70,9 @@ function MapPageInner() {
   } | null>(null);
   const [routeModalOpen, setRouteModalOpen] = useState(false);
   const [f2pMode, setF2pMode] = useState(false);
+
+  useCloseOnBack(routeModalOpen, useCallback(() => setRouteModalOpen(false), []));
+  useLockBodyScroll(routeModalOpen);
 
   // Load the saved F2P-highlight preference before the map initialises
   useEffect(() => {
