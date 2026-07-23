@@ -70,10 +70,10 @@ export default function CluesPage() {
   }, [activeId]);
 
   const list = entries[activeId] || [];
-  const matches = useMemo(() => {
+  const displayed = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return [];
-    return list.filter((e) => e.clue.toLowerCase().includes(q)).slice(0, 30);
+    if (!q) return list;
+    return list.filter((e) => e.clue.toLowerCase().includes(q));
   }, [query, list]);
 
   return (
@@ -148,18 +148,20 @@ export default function CluesPage() {
 
         {!loading && !error && list.length > 0 && (
           <div style={{ fontSize: 12, color: C.textDim, margin: "8px 0 4px" }}>
-            {list.length} {activeType.label.toLowerCase()} clues loaded — start typing to search.
+            {query.trim()
+              ? `${displayed.length} of ${list.length} ${activeType.label.toLowerCase()} clues match.`
+              : `${list.length} ${activeType.label.toLowerCase()} clues loaded — type to filter.`}
           </div>
         )}
 
-        {query.trim() && (
+        {!loading && !error && list.length > 0 && (
           <div style={{ marginTop: 10 }}>
-            {matches.length === 0 && !loading && (
+            {displayed.length === 0 && (
               <div style={{ fontSize: 13, color: C.textDim, textAlign: "center", padding: 20 }}>
                 No matching clues found.
               </div>
             )}
-            {matches.map((m, i) => (
+            {displayed.map((m, i) => (
               <div key={i} style={{ ...card, padding: "12px 14px", marginBottom: 8 }}>
                 <div style={{ fontSize: 13, color: C.textDim, marginBottom: 4 }}>{m.clue}</div>
                 <div style={{ fontSize: 15, color: C.parch, fontWeight: 600 }}>{m.solution}</div>
