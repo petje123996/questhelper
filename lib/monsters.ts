@@ -10,6 +10,7 @@ export type MonsterEntry = {
   attack: number;
   strength: number;
   maxHit: number;
+  aggressive: boolean | null; // null = infobox has no Aggressive row
   combatLevel: number;
   xpPerKill: number;
   lookup: Lookup;
@@ -27,9 +28,15 @@ const XP_PER_HP = 4;
 // document order and use the first one whose rows include a Hitpoints
 // value — that's virtually always the infobox, since it's the first
 // substantial table on a monster page, without depending on class names.
-function parseMonsterInfobox(
-  html: string
-): { hitpoints: number; defence: number; attack: number; strength: number; maxHit: number; combatLevel: number } | null {
+function parseMonsterInfobox(html: string): {
+  hitpoints: number;
+  defence: number;
+  attack: number;
+  strength: number;
+  maxHit: number;
+  aggressive: boolean | null;
+  combatLevel: number;
+} | null {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const tables = Array.from(doc.body.querySelectorAll("table"));
 
@@ -39,6 +46,7 @@ function parseMonsterInfobox(
     let attack = 0;
     let strength = 0;
     let maxHit = 0;
+    let aggressive: boolean | null = null;
     let combatLevel = 0;
     table.querySelectorAll("tr").forEach((tr) => {
       const cells = Array.from(tr.children).filter(
@@ -48,6 +56,12 @@ function parseMonsterInfobox(
       const label = cleanText(cells[0].textContent || "").toLowerCase();
       if (!label) return;
       const value = cleanText(cells[1].textContent || "");
+      if (label.startsWith("aggressive")) {
+        const v = value.toLowerCase();
+        if (/^yes/.test(v)) aggressive = true;
+        else if (/^no/.test(v)) aggressive = false;
+        return;
+      }
       const num = parseInt(value.replace(/[^\d]/g, ""), 10);
       if (!Number.isFinite(num) || num <= 0) return;
       if (label.includes("hitpoints")) hitpoints = Math.max(hitpoints, num);
@@ -61,7 +75,9 @@ function parseMonsterInfobox(
     // content table elsewhere on a non-monster page (e.g. a guide
     // discussing a monster's HP) is far less likely to also carry a
     // matching Combat level row right next to it.
-    if (hitpoints > 0 && combatLevel > 0) return { hitpoints, defence, attack, strength, maxHit, combatLevel };
+    if (hitpoints > 0 && combatLevel > 0) {
+      return { hitpoints, defence, attack, strength, maxHit, aggressive, combatLevel };
+    }
   }
   return null;
 }
@@ -84,6 +100,7 @@ export async function fetchMonsterEntry(name: string): Promise<MonsterEntry | nu
     attack: stats.attack,
     strength: stats.strength,
     maxHit: stats.maxHit,
+    aggressive: stats.aggressive,
     combatLevel: stats.combatLevel,
     xpPerKill: stats.hitpoints * XP_PER_HP,
     lookup: buildLookup(name, name, html),
