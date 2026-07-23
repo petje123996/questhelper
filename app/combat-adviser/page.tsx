@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Nav from "@/components/Nav";
@@ -36,6 +36,15 @@ function statLabel(v: number): string {
   return typeof v !== "number" || !Number.isFinite(v) || v < 0 ? "?" : fmtNum(v);
 }
 
+// Strength, Max hit and Aggressive only live in the "Combat info" box on
+// a monster's own wiki page, not in the Bestiary bracket list tables —
+// so they're fetched lazily per monster (same infobox parser as the
+// guide-harvest fallback) once it's actually shown in the results, and
+// cached by name across brackets/modes since a monster's own stats don't
+// depend on how it was found.
+type EnrichInfo = { strength: number; maxHit: number; aggressive: boolean | null };
+const ENRICH_CACHE_KEY = "qh-monster-enrich-v1";
+
 const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
   { id: "main", label: "Main" },
   { id: "ironman", label: "Ironman" },
@@ -63,10 +72,17 @@ export default function CombatAdviserPage() {
   const [filterMaxAtk, setFilterMaxAtk] = useState("");
   const [filterMaxDef, setFilterMaxDef] = useState("");
   const [filterMinHp, setFilterMinHp] = useState("");
+  const [enrichment, setEnrichment] = useState<Record<string, EnrichInfo>>({});
+  const enrichAttempted = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
     if (savedPlayer && savedPlayer.name && savedPlayer.skills) setPlayer(savedPlayer);
+    const savedEnrichment = loadStored(ENRICH_CACHE_KEY);
+    if (savedEnrichment && typeof savedEnrichment === "object") {
+      setEnrichment(savedEnrichment);
+      Object.keys(savedEnrichment).forEach((n) => enrichAttempted.current.add(n));
+    }
   }, []);
 
   useCloseOnBack(!!picture, () => setPicture(null));
@@ -271,13 +287,46 @@ export default function CombatAdviserPage() {
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1), filtersEmptied: false };
   }, [entries, combatLevel, weights, hasManualFilters, filterQuery, filterMaxAtk, filterMaxDef, filterMinHp]);
 
+  // Fetch Strength/Max hit/Aggressive per monster actually being shown,
+  // capped so a long list doesn't fire off dozens of requests at once —
+  // the top-ranked ones (which matter most) go first. Already-cached or
+  // in-flight names are skipped via the ref, so this can't loop even
+  // though `enrichment` updates trigger a re-render.
+  const displayNames = useMemo(() => {
+    const list = [best, ...alternatives].filter((e): e is Entry => !!e).map((e) => e.name);
+    return list.slice(0, 45);
+  }, [best, alternatives]);
+
+  useEffect(() => {
+    const toFetch = displayNames.filter((n) => !enrichAttempted.current.has(n));
+    if (!toFetch.length) return;
+    toFetch.forEach((n) => enrichAttempted.current.add(n));
+    (async () => {
+      const results = await fetchMonsterEntries(toFetch);
+      if (!results.length) return;
+      setEnrichment((prev) => {
+        const next = { ...prev };
+        results.forEach((r) => {
+          next[r.name] = { strength: r.strength, maxHit: r.maxHit, aggressive: r.aggressive };
+        });
+        saveStored(ENRICH_CACHE_KEY, next);
+        return next;
+      });
+    })();
+  }, [displayNames]);
+
   const openPicture = async (name: string) => {
     setPicture({ name, lookup: null, loading: true });
     const lookup = await fetchLookup(name, name);
     setPicture({ name, lookup, loading: false });
   };
 
-  const monsterCard = (e: Entry, highlight: boolean) => (
+  const monsterCard = (e: Entry, highlight: boolean) => {
+    const enriched = enrichment[e.name];
+    const strength = enriched?.strength ?? e.strength;
+    const maxHit = enriched?.maxHit ?? e.maxHit;
+    const aggressive = enriched?.aggressive;
+    return (
     <div
       key={e.name}
       style={{
@@ -309,10 +358,11 @@ export default function CombatAdviserPage() {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
         <span style={chip}>❤️ {fmtNum(e.hitpoints)} HP</span>
         <span style={chip}>⚔️ {statLabel(e.attack)} Atk</span>
-        <span style={chip}>💪 {statLabel(e.strength)} Str</span>
+        <span style={chip}>💪 {statLabel(strength)} Str</span>
         <span style={chip}>🛡️ {statLabel(e.defence)} Def</span>
-        <span style={chip}>💥 {statLabel(e.maxHit)} max hit</span>
+        <span style={chip}>💥 {statLabel(maxHit)} max hit</span>
         <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
+        {aggressive === true && <span style={chip}>😠 Aggressive</span>}
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
         <button
@@ -333,7 +383,8 @@ export default function CombatAdviserPage() {
         </button>
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div style={frame}>
