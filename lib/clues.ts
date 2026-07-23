@@ -89,6 +89,39 @@ export function parseClueTable(html: string): ClueEntry[] {
   return entries;
 }
 
+export type ClueLocation = { x: number; y: number; plane?: number; mapId?: number; title: string };
+
+// Anagram (and some cryptic) solutions are an instruction like "Talk to
+// Hans." rather than a table cell with an embedded map link, so there's no
+// coordinate to read directly. Best-effort: strip the instruction down to
+// a likely NPC/location name and look up that page's own embedded map
+// coordinates, same as NPC/location lookups elsewhere in the app.
+function guessTitles(solution: string): string[] {
+  const stripped = solution
+    .replace(/^(talk to|speak to|search|dig near|dig at|ask|pickpocket)\s+/i, "")
+    .trim();
+  const cut = stripped
+    .split(/[,.(]| who | near | in | at | found | west of| east of| north of| south of/i)[0]
+    .trim();
+  return Array.from(new Set([cut, stripped, solution].filter(Boolean)));
+}
+
+export async function locateClueSolution(solution: string): Promise<ClueLocation | null> {
+  for (const title of guessTitles(solution)) {
+    try {
+      const data = await fetchJson(
+        `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(title)}`
+      );
+      if (data.error) continue;
+      const coords = extractCoords(data.parse.text["*"]);
+      if (coords) return { ...coords, title };
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null;
+}
+
 async function tryPage(page: string): Promise<ClueEntry[] | null> {
   try {
     const data = await fetchJson(
