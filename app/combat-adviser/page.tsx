@@ -28,6 +28,12 @@ type Entry = {
   xpPerKill: number;
 };
 
+// -1 means "column not found" (unknown); anything else non-numeric means
+// a stale cached entry saved before this stat existed on Entry.
+function statLabel(v: number): string {
+  return typeof v !== "number" || !Number.isFinite(v) || v < 0 ? "?" : fmtNum(v);
+}
+
 const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
   { id: "main", label: "Main" },
   { id: "ironman", label: "Ironman" },
@@ -62,7 +68,10 @@ export default function CombatAdviserPage() {
 
   useEffect(() => {
     if (combatLevel === null) return;
-    const cacheKey = `qh-bestiary-${members ? "p2p" : "f2p"}-${Math.floor(combatLevel / 10)}`;
+    // v2: entries now carry an "attack" field — versioned so caches saved
+    // before that field existed (undefined attack -> NaN in the score)
+    // don't get reused as-is.
+    const cacheKey = `qh-bestiary-v2-${members ? "p2p" : "f2p"}-${Math.floor(combatLevel / 10)}`;
     setEntries(null);
     const cached = loadStored(cacheKey);
     if (cached && Array.isArray(cached.entries) && cached.entries.length > 0) {
@@ -172,7 +181,7 @@ export default function CombatAdviserPage() {
       (e) => e.combatLevel === 0 || (e.combatLevel >= levelMin && e.combatLevel <= levelMax)
     );
     const pool = inRange.length ? inRange : entries;
-    const statOrWorst = (v: number) => (v < 0 ? 9999 : v);
+    const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
     const score = (e: Entry) => e.hitpoints / (1 + statOrWorst(e.defence) + statOrWorst(e.attack));
     const ranked = [...pool].sort((a, b) => score(b) - score(a));
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1) };
@@ -215,8 +224,8 @@ export default function CombatAdviserPage() {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
         <span style={chip}>❤️ {fmtNum(e.hitpoints)} HP</span>
-        <span style={chip}>⚔️ {e.attack < 0 ? "?" : fmtNum(e.attack)} Atk</span>
-        <span style={chip}>🛡️ {e.defence < 0 ? "?" : fmtNum(e.defence)} Def</span>
+        <span style={chip}>⚔️ {statLabel(e.attack)} Atk</span>
+        <span style={chip}>🛡️ {statLabel(e.defence)} Def</span>
         <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
