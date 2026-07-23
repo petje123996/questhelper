@@ -1,5 +1,27 @@
 export const TILES = "https://maps.runescape.wiki/osrs/tiles";
 
+export type MapLinkTarget = {
+  x: number;
+  y: number;
+  title: string;
+  marker: boolean;
+  plane?: number;
+  mapId?: number;
+};
+
+// Build a /map URL for a specific target, so any page can link straight to
+// a spot on the world map without holding map state itself.
+export function mapHref(target: MapLinkTarget): string {
+  const params = new URLSearchParams();
+  params.set("x", String(Math.round(target.x)));
+  params.set("y", String(Math.round(target.y)));
+  params.set("title", target.title);
+  if (target.marker) params.set("marker", "1");
+  if (target.plane !== undefined) params.set("plane", String(target.plane));
+  if (target.mapId !== undefined) params.set("mapId", String(target.mapId));
+  return `/map?${params.toString()}`;
+}
+
 // Common teleports for route advice: destination coords + cast time
 export type Teleport = {
   name: string;
