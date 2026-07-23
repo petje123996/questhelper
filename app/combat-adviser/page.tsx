@@ -8,9 +8,10 @@ import { C, frame, goldTitle, card, headBtn, bigBtn, chip } from "@/lib/theme";
 import { loadStored, saveStored } from "@/lib/storage";
 import { calcCombat } from "@/lib/quest";
 import type { Player, Lookup } from "@/lib/quest";
-import { fetchTrainingCandidates } from "@/lib/training";
-import { fetchMonsterEntries } from "@/lib/monsters";
-import type { MonsterEntry } from "@/lib/monsters";
+import { fetchTrainingCandidates, NON_MONSTER_NAME_PATTERN } from "@/lib/training";
+import { debugMonsterPage, fetchMonsterEntries } from "@/lib/monsters";
+import type { MonsterDebug, MonsterEntry } from "@/lib/monsters";
+import { fetchBestiary } from "@/lib/bestiary";
 import { mapHref } from "@/lib/map";
 import { fmtNum, wikiUrl } from "@/lib/format";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
@@ -34,6 +35,8 @@ export default function CombatAdviserPage() {
   const [loadingLabel, setLoadingLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [picture, setPicture] = useState<{ name: string; lookup: Lookup } | null>(null);
+  const [debug, setDebug] = useState<MonsterDebug[] | null>(null);
+  const [debugOpen, setDebugOpen] = useState(false);
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
@@ -54,16 +57,39 @@ export default function CombatAdviserPage() {
     (async () => {
       setLoading(true);
       setError(null);
+      setDebug(null);
+      setDebugOpen(false);
       try {
-        setLoadingLabel("Reading the training guide…");
-        const names = await fetchTrainingCandidates(members);
-        if (!names.length) throw new Error("No training guide found on the wiki.");
-        setLoadingLabel(`Checking stats for ${Math.min(names.length, 45)} monsters…`);
+        let names: string[] = [];
+        let source = "";
+
+        setLoadingLabel("Loading the monster bestiary…");
+        const bestiaryRows = await fetchBestiary();
+        if (bestiaryRows.length >= 15) {
+          const modeFiltered = bestiaryRows.filter((r) => r.members === null || r.members === members);
+          names = modeFiltered
+            .sort((a, b) => b.hitpoints - a.hitpoints)
+            .slice(0, 45)
+            .map((r) => r.name);
+          source = `Bestiary (${bestiaryRows.length} rows found)`;
+        }
+
+        if (!names.length) {
+          setLoadingLabel("Bestiary unavailable — reading the training guide instead…");
+          names = await fetchTrainingCandidates(members);
+          source = "training guide links";
+        }
+
+        if (!names.length) throw new Error("No monster data found on the wiki.");
+
+        setLoadingLabel(`Checking stats for ${names.length} monsters…`);
         const found = await fetchMonsterEntries(names);
         if (!found.length) {
+          const sample = names.filter((n) => !NON_MONSTER_NAME_PATTERN.test(n)).slice(0, 3);
+          setDebug(await Promise.all(sample.map((n) => debugMonsterPage(n))));
           throw new Error(
-            `Found ${Math.min(names.length, 45)} candidate names on the guide, but couldn't read ` +
-              "monster stats from any of their wiki pages."
+            `Found ${names.length} candidate names (via ${source}), but couldn't read monster stats ` +
+              "from any of their wiki pages."
           );
         }
         setEntries(found);
@@ -287,6 +313,52 @@ export default function CombatAdviserPage() {
                   Couldn't load the training guide
                 </div>
                 {error}
+
+                {debug && debug.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      onClick={() => setDebugOpen(!debugOpen)}
+                      style={{
+                        background: "transparent",
+                        border: `1px solid ${C.border}`,
+                        color: C.gold,
+                        borderRadius: 8,
+                        padding: "7px 10px",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {debugOpen ? "Hide" : "🔧 Show"} what the parser found
+                    </button>
+                    {debugOpen && (
+                      <div style={{ marginTop: 10 }}>
+                        {debug.map((d) => (
+                          <div key={d.name} style={{ marginBottom: 10 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: C.gold, marginBottom: 4 }}>
+                              {d.name} {!d.found && "(page not found)"}
+                            </div>
+                            <pre
+                              style={{
+                                fontSize: 11,
+                                color: C.textDim,
+                                background: C.bg,
+                                border: `1px solid ${C.borderSoft}`,
+                                borderRadius: 8,
+                                padding: 10,
+                                overflowX: "auto",
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                              }}
+                            >
+                              {d.rows.length ? d.rows.join("\n") : "(no table rows with 2+ cells found)"}
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

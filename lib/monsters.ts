@@ -83,3 +83,30 @@ export async function fetchMonsterEntries(names: string[]): Promise<MonsterEntry
   const results = await Promise.all(unique.map((n) => fetchMonsterEntry(n).catch(() => null)));
   return results.filter((r): r is MonsterEntry => r !== null);
 }
+
+export type MonsterDebug = { name: string; found: boolean; rows: string[] };
+
+// Diagnostic dump used only when fetchMonsterEntries comes back empty:
+// shows every label/value pair our parser can actually see in the first
+// few tables of a candidate page, so a real parsing mismatch can be
+// spotted directly instead of guessed at blind.
+export async function debugMonsterPage(name: string): Promise<MonsterDebug> {
+  const html = await fetchPageHtml(name);
+  if (!html) return { name, found: false, rows: [] };
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const rows: string[] = [];
+  Array.from(doc.body.querySelectorAll("table"))
+    .slice(0, 3)
+    .forEach((table, ti) => {
+      table.querySelectorAll("tr").forEach((tr) => {
+        const cells = Array.from(tr.children).filter(
+          (c) => c.tagName === "TH" || c.tagName === "TD"
+        );
+        if (cells.length < 2) return;
+        const label = cleanText(cells[0].textContent || "");
+        const value = cleanText(cells[1].textContent || "");
+        if (label) rows.push(`[table ${ti + 1}] ${label}: ${value}`);
+      });
+    });
+  return { name, found: true, rows: rows.slice(0, 40) };
+}
