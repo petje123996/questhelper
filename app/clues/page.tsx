@@ -5,10 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn } from "@/lib/theme";
-import { API, fetchJson } from "@/lib/format";
 import { loadStored, saveStored } from "@/lib/storage";
 import { mapHref } from "@/lib/map";
-import { CLUE_TYPES, parseClueTable } from "@/lib/clues";
+import { CLUE_TYPES, fetchClueTable } from "@/lib/clues";
 import type { ClueEntry } from "@/lib/clues";
 
 export default function CluesPage() {
@@ -33,14 +32,8 @@ export default function CluesPage() {
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchJson(
-          `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(
-            activeType.page
-          )}`
-        );
-        if (data.error) throw new Error("Clue list not found on the wiki.");
-        const parsed = parseClueTable(data.parse.text["*"]);
-        if (!parsed.length) throw new Error("No clues found on this page.");
+        const parsed = await fetchClueTable(activeType);
+        if (!parsed.length) throw new Error("No clues found on the wiki for this type.");
         setEntries((prev) => ({ ...prev, [activeId]: parsed }));
         saveStored(cacheKey, { ts: Date.now(), entries: parsed });
       } catch (e: any) {
