@@ -1,12 +1,26 @@
-import { cleanText } from "./format";
+import { API, cleanText, fetchJson } from "./format";
 import { extractCoords } from "./quest";
 import type { Coords } from "./quest";
 
-export type ClueType = { id: string; label: string; page: string; icon: string };
+// Wiki page titles for clue solutions move around / aren't 100% certain
+// from memory, so each type lists candidate titles to try in order.
+export type ClueType = { id: string; label: string; pages: string[]; searchTerm: string; icon: string };
 
 export const CLUE_TYPES: ClueType[] = [
-  { id: "anagram", label: "Anagram", page: "Anagram clues", icon: "🔤" },
-  { id: "cryptic", label: "Cryptic", page: "Cryptic clues", icon: "📜" },
+  {
+    id: "anagram",
+    label: "Anagram",
+    pages: ["Treasure Trails/Guide/Anagrams", "Anagram clues", "Anagram clue"],
+    searchTerm: "anagram clues",
+    icon: "🔤",
+  },
+  {
+    id: "cryptic",
+    label: "Cryptic",
+    pages: ["Treasure Trails/Guide/Cryptic clues", "Cryptic clues", "Cryptic clue"],
+    searchTerm: "cryptic clues",
+    icon: "📜",
+  },
 ];
 
 export type ClueEntry = {
@@ -73,4 +87,40 @@ export function parseClueTable(html: string): ClueEntry[] {
   });
 
   return entries;
+}
+
+async function tryPage(page: string): Promise<ClueEntry[] | null> {
+  try {
+    const data = await fetchJson(
+      `${API}?action=parse&format=json&origin=*&redirects=1&prop=text&page=${encodeURIComponent(page)}`
+    );
+    if (data.error) return null;
+    const parsed = parseClueTable(data.parse.text["*"]);
+    return parsed.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Try each known candidate title for this clue type, then fall back to a
+// wiki search so a wrong guess at the exact page title doesn't break it.
+export async function fetchClueTable(type: ClueType): Promise<ClueEntry[]> {
+  for (const page of type.pages) {
+    const found = await tryPage(page);
+    if (found) return found;
+  }
+  try {
+    const search = await fetchJson(
+      `${API}?action=opensearch&format=json&origin=*&limit=5&search=${encodeURIComponent(type.searchTerm)}`
+    );
+    const candidates: string[] = search[1] || [];
+    for (const page of candidates) {
+      if (type.pages.includes(page)) continue;
+      const found = await tryPage(page);
+      if (found) return found;
+    }
+  } catch {
+    /* give up gracefully below */
+  }
+  return [];
 }
