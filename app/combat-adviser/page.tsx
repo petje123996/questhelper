@@ -212,7 +212,19 @@ export default function CombatAdviserPage() {
     const inRange = entries.filter(
       (e) => e.combatLevel === 0 || (e.combatLevel >= levelMin && e.combatLevel <= levelMax)
     );
-    const pool = inRange.length ? inRange : entries;
+    const levelPool = inRange.length ? inRange : entries;
+    // A near-zero-stat monster (Seagull: 1 HP, ~0 Attack/Defence) can win
+    // the safety-weighted score purely by having nothing to avoid, even
+    // though one hit ends the fight and it's worth almost no XP — a
+    // one-hit joke monster, not a real training target. Drop anything
+    // whose Hitpoints (≈ XP/kill) sits far below the best the pool has to
+    // offer for this level range, so only monsters actually worth
+    // fighting compete for the recommendation. Falls back to the
+    // unfiltered pool if that would leave nothing at all.
+    const maxHp = Math.max(...levelPool.map((e) => e.hitpoints));
+    const hpFloor = Math.max(3, maxHp * 0.15);
+    const trainable = levelPool.filter((e) => e.hitpoints >= hpFloor);
+    const pool = trainable.length ? trainable : levelPool;
     const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
     const { attackWeight, defenceWeight } = weights;
     const score = (e: Entry) =>
@@ -527,7 +539,8 @@ export default function CombatAdviserPage() {
                   From the wiki's Bestiary for your level range, ranked by highest Hitpoints (≈ XP value
                   per kill) against lowest Attack and Defence, weighted to your own stats — the lower your
                   Defence, the more a monster's Attack counts against it; the lower your offence, the more
-                  its Defence does.
+                  its Defence does. One-hit joke monsters (very low HP relative to the best options here)
+                  are filtered out — they're not worth fighting regardless of how weak their stats look.
                 </div>
                 {membershipCounts && (
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 4, opacity: 0.7 }}>
