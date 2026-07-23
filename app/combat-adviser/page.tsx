@@ -24,6 +24,7 @@ type Entry = {
   hitpoints: number;
   defence: number;
   attack: number;
+  strength: number;
   combatLevel: number;
   xpPerKill: number;
 };
@@ -56,6 +57,11 @@ export default function CombatAdviserPage() {
   const [bestiaryDebug, setBestiaryDebug] = useState<BestiaryDebug | null>(null);
   const [bestiaryDebugOpen, setBestiaryDebugOpen] = useState(false);
   const [membershipCounts, setMembershipCounts] = useState<MembershipCounts | null>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [filterMaxAtk, setFilterMaxAtk] = useState("");
+  const [filterMaxDef, setFilterMaxDef] = useState("");
+  const [filterMinHp, setFilterMinHp] = useState("");
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
@@ -103,6 +109,7 @@ export default function CombatAdviserPage() {
             hitpoints: r.hitpoints,
             defence: r.defence,
             attack: r.attack,
+            strength: r.strength,
             combatLevel: r.combatLevel,
             xpPerKill: r.hitpoints * 4,
           });
@@ -136,6 +143,7 @@ export default function CombatAdviserPage() {
             hitpoints: e.hitpoints,
             defence: e.defence,
             attack: e.attack,
+            strength: e.strength,
             combatLevel: e.combatLevel,
             xpPerKill: e.xpPerKill,
           }));
@@ -206,9 +214,11 @@ export default function CombatAdviserPage() {
   // was asked for. Monsters with an unknown Attack/Defence (-1, column
   // missing on that table) are scored as worst-case rather than
   // best-case, so missing data can't falsely push them to the top.
-  const { best, alternatives } = useMemo(() => {
+  const hasManualFilters = !!(filterQuery.trim() || filterMaxAtk || filterMaxDef || filterMinHp);
+
+  const { best, alternatives, filtersEmptied } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
-      return { best: null as Entry | null, alternatives: [] as Entry[] };
+      return { best: null as Entry | null, alternatives: [] as Entry[], filtersEmptied: false };
     }
     const levelMin = Math.max(1, combatLevel - 60);
     const levelMax = combatLevel + 20;
@@ -227,15 +237,36 @@ export default function CombatAdviserPage() {
     const maxHp = Math.max(...levelPool.map((e) => e.hitpoints));
     const hpFloor = Math.max(3, maxHp * 0.15);
     const trainable = levelPool.filter((e) => e.hitpoints >= hpFloor);
-    const pool = trainable.length ? trainable : levelPool;
+    const autoPool = trainable.length ? trainable : levelPool;
+
+    // Manual filters (search + max Attack/Defence + min HP) are an
+    // explicit user override, applied on top of the automatic picks —
+    // an unknown (-1) Attack/Defence passes a max filter rather than
+    // being hidden, since we can't tell if it's actually over the limit.
+    const q = filterQuery.trim().toLowerCase();
+    const maxAtk = filterMaxAtk === "" ? null : Number(filterMaxAtk);
+    const maxDef = filterMaxDef === "" ? null : Number(filterMaxDef);
+    const minHp = filterMinHp === "" ? null : Number(filterMinHp);
+    const manualFiltered = autoPool.filter((e) => {
+      if (q && !e.name.toLowerCase().includes(q)) return false;
+      if (maxAtk !== null && e.attack >= 0 && e.attack > maxAtk) return false;
+      if (maxDef !== null && e.defence >= 0 && e.defence > maxDef) return false;
+      if (minHp !== null && e.hitpoints < minHp) return false;
+      return true;
+    });
+    if (hasManualFilters && !manualFiltered.length) {
+      return { best: null as Entry | null, alternatives: [] as Entry[], filtersEmptied: true };
+    }
+    const pool = hasManualFilters ? manualFiltered : autoPool;
+
     const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
     const { attackWeight, defenceWeight } = weights;
     const HP_WEIGHT = 10; // keeps Hitpoints dominant over the Attack/Defence penalty below
     const score = (e: Entry) =>
       e.hitpoints * HP_WEIGHT - (statOrWorst(e.defence) * defenceWeight + statOrWorst(e.attack) * attackWeight);
     const ranked = [...pool].sort((a, b) => score(b) - score(a));
-    return { best: ranked[0] ?? null, alternatives: ranked.slice(1) };
-  }, [entries, combatLevel, weights]);
+    return { best: ranked[0] ?? null, alternatives: ranked.slice(1), filtersEmptied: false };
+  }, [entries, combatLevel, weights, hasManualFilters, filterQuery, filterMaxAtk, filterMaxDef, filterMinHp]);
 
   const openPicture = async (name: string) => {
     setPicture({ name, lookup: null, loading: true });
@@ -275,6 +306,7 @@ export default function CombatAdviserPage() {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
         <span style={chip}>❤️ {fmtNum(e.hitpoints)} HP</span>
         <span style={chip}>⚔️ {statLabel(e.attack)} Atk</span>
+        <span style={chip}>💪 {statLabel(e.strength)} Str</span>
         <span style={chip}>🛡️ {statLabel(e.defence)} Def</span>
         <span style={chip}>📈 ~{fmtNum(e.xpPerKill)} xp/kill</span>
       </div>
@@ -404,8 +436,94 @@ export default function CombatAdviserPage() {
               </div>
             )}
 
+            <div style={{ marginBottom: 14 }}>
+              <button
+                onClick={() => setFilterOpen((v) => !v)}
+                style={{
+                  ...headBtn,
+                  width: "100%",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span>
+                  🔎 Filters{hasManualFilters ? ` (${[filterQuery.trim(), filterMaxAtk, filterMaxDef, filterMinHp].filter(Boolean).length} active)` : ""}
+                </span>
+                <span>{filterOpen ? "▲" : "▼"}</span>
+              </button>
+              {filterOpen && (
+                <div style={{ ...card, padding: 12, marginTop: 8 }}>
+                  <input
+                    value={filterQuery}
+                    onChange={(e) => setFilterQuery(e.target.value)}
+                    placeholder="Search monster name…"
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: "10px 12px",
+                      fontSize: 14,
+                      background: C.panelSoft,
+                      color: C.parch,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 8,
+                      outline: "none",
+                      marginBottom: 8,
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[
+                      { label: "Max Atk", value: filterMaxAtk, set: setFilterMaxAtk },
+                      { label: "Max Def", value: filterMaxDef, set: setFilterMaxDef },
+                      { label: "Min HP", value: filterMinHp, set: setFilterMinHp },
+                    ].map((f) => (
+                      <div key={f.label} style={{ flex: 1 }}>
+                        <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>{f.label}</div>
+                        <input
+                          value={f.value}
+                          onChange={(e) => f.set(e.target.value.replace(/[^\d]/g, ""))}
+                          inputMode="numeric"
+                          placeholder="—"
+                          style={{
+                            width: "100%",
+                            boxSizing: "border-box",
+                            padding: "8px 10px",
+                            fontSize: 14,
+                            background: C.panelSoft,
+                            color: C.parch,
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 8,
+                            outline: "none",
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {hasManualFilters && (
+                    <button
+                      onClick={() => {
+                        setFilterQuery("");
+                        setFilterMaxAtk("");
+                        setFilterMaxDef("");
+                        setFilterMinHp("");
+                      }}
+                      style={{ ...headBtn, width: "100%", marginTop: 10 }}
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             {loading && (
               <div style={{ textAlign: "center", padding: 30, color: C.textDim }}>{loadingLabel}</div>
+            )}
+
+            {filtersEmptied && !loading && !error && (
+              <div style={{ ...card, padding: 16, color: C.textDim, textAlign: "center" }}>
+                No monsters match your filters. Try loosening them.
+              </div>
             )}
 
             {error && !loading && (
