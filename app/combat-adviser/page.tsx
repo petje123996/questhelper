@@ -419,8 +419,41 @@ export default function CombatAdviserPage() {
       {statsDebug && statsDebug.name === e.name && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.gold, marginBottom: 4 }}>
-            {statsDebug.found ? "What the parser sees on this monster's own page (tap to select all):" : "Page not found."}
+            {statsDebug.found
+              ? "What the parser sees on this monster's own page (tap to select all):"
+              : "Page not found for this exact title:"}
           </div>
+          {!statsDebug.found && (
+            <>
+              <pre
+                onClick={(ev) => {
+                  const sel = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(ev.currentTarget);
+                  sel?.removeAllRanges();
+                  sel?.addRange(range);
+                }}
+                style={{
+                  fontSize: 11,
+                  color: C.parch,
+                  background: C.bg,
+                  border: `1px solid ${C.borderSoft}`,
+                  borderRadius: 8,
+                  padding: 10,
+                  overflowX: "auto",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}
+              >
+                {`"${statsDebug.name}"`}
+              </pre>
+              <div style={{ fontSize: 10, color: C.textDim, marginTop: 4 }}>
+                If that doesn't look like a real monster name (extra words stuck together, missing a
+                space, etc.), the Bestiary table's name column was misread — tap to select the text
+                above and send it over.
+              </div>
+            </>
+          )}
           {statsDebug.found && (
             <pre
               onClick={(ev) => {
