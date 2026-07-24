@@ -42,7 +42,7 @@ function statLabel(v: number): string {
 // guide-harvest fallback) once it's actually shown in the results, and
 // cached by name across brackets/modes since a monster's own stats don't
 // depend on how it was found.
-type EnrichInfo = { strength: number; maxHit: number; aggressive: boolean | null };
+type EnrichInfo = { strength: number; maxHit: number; aggressive: boolean | null; isBoss: boolean };
 const ENRICH_CACHE_KEY = "qh-monster-enrich-v1";
 
 const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
@@ -316,7 +316,7 @@ export default function CombatAdviserPage() {
       setEnrichment((prev) => {
         const next = { ...prev };
         results.forEach((r) => {
-          next[r.name] = { strength: r.strength, maxHit: r.maxHit, aggressive: r.aggressive };
+          next[r.name] = { strength: r.strength, maxHit: r.maxHit, aggressive: r.aggressive, isBoss: r.isBoss };
         });
         saveStored(ENRICH_CACHE_KEY, next);
         return next;
@@ -348,6 +348,7 @@ export default function CombatAdviserPage() {
     const strength = enriched?.strength ?? e.strength;
     const maxHit = enriched?.maxHit ?? e.maxHit;
     const aggressive = enriched?.aggressive;
+    const isBoss = enriched?.isBoss ?? false;
     const statsUnknown = statLabel(strength) === "?" && statLabel(maxHit) === "?";
     return (
     <div
@@ -366,15 +367,32 @@ export default function CombatAdviserPage() {
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span
-          style={{
-            ...(highlight ? { ...goldTitle, fontSize: 20 } : {}),
-            color: highlight ? undefined : C.parch,
-            fontWeight: 700,
-            fontSize: highlight ? 20 : 15,
-          }}
-        >
-          {e.name}
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              ...(highlight ? { ...goldTitle, fontSize: 20 } : {}),
+              color: highlight ? undefined : C.parch,
+              fontWeight: 700,
+              fontSize: highlight ? 20 : 15,
+            }}
+          >
+            {e.name}
+          </span>
+          {isBoss && (
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: C.ink,
+                background: C.gold,
+                borderRadius: 6,
+                padding: "2px 6px",
+                letterSpacing: 0.5,
+              }}
+            >
+              👑 BOSS
+            </span>
+          )}
         </span>
         {e.combatLevel > 0 && <span style={{ fontSize: 12, color: C.textDim }}>Lvl {e.combatLevel}</span>}
       </div>
@@ -508,11 +526,11 @@ export default function CombatAdviserPage() {
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "16px 14px 40px" }}>
         {!player ? (
           <div style={{ ...card, padding: 16, color: C.textDim, fontSize: 14, textAlign: "center" }}>
-            Load your RSN on the home screen first — the adviser needs your stats to find a
+            Load your RSN in your Profile first — the adviser needs your stats to find a
             training spot that matches your level.
             <div style={{ marginTop: 12 }}>
-              <Link href="/" style={{ ...bigBtn, display: "inline-block", textDecoration: "none" }}>
-                Go to home
+              <Link href="/profile" style={{ ...bigBtn, display: "inline-block", textDecoration: "none" }}>
+                Go to Profile
               </Link>
             </div>
           </div>
