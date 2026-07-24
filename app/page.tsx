@@ -19,7 +19,7 @@ import {
   toolChip,
   toolIcon,
 } from "@/lib/theme";
-import { loadStored, saveStored, removeStored, removeStoredByPrefix, storageKey } from "@/lib/storage";
+import { loadStored, saveStored, removeStored, storageKey } from "@/lib/storage";
 import { API, capitalize, fmtNum, fetchJson, normalizeSkill, wikiUrl } from "@/lib/format";
 import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords, fetchLookup } from "@/lib/quest";
 import { mapHref } from "@/lib/map";
@@ -148,10 +148,7 @@ export default function QuestHelper() {
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rsn, setRsn] = useState("");
   const [player, setPlayer] = useState<Player | null>(null);
-  const [statsLoading, setStatsLoading] = useState(false);
-  const [statsError, setStatsError] = useState<string | null>(null);
   const debounceRef = useRef<any>(null);
 
   useCloseOnBack(!!lookup, useCallback(() => setLookup(null), []));
@@ -176,10 +173,7 @@ export default function QuestHelper() {
     if (prog && typeof prog === "object") setProgress(prog);
 
     const savedPlayer = loadStored("qh-rsn");
-    if (savedPlayer && savedPlayer.name && savedPlayer.skills) {
-      setPlayer(savedPlayer);
-      setRsn(savedPlayer.name);
-    }
+    if (savedPlayer && savedPlayer.name && savedPlayer.skills) setPlayer(savedPlayer);
 
     // Optimal Quest Guide order from the wiki (refresh at most weekly)
     const cachedOpt = loadStored("qh-optimal");
@@ -334,48 +328,6 @@ export default function QuestHelper() {
     }, 350);
     return () => clearTimeout(debounceRef.current);
   }, [query, allQuests]);
-
-  const loadStats = async () => {
-    const name = rsn.trim();
-    if (!name) return;
-    setStatsLoading(true);
-    setStatsError(null);
-    try {
-      const res = await fetch(`/api/hiscores?player=${encodeURIComponent(name)}`);
-      const data = await res.json();
-      if (!res.ok || !Array.isArray(data.skills)) {
-        throw new Error(data.error || "Player not found");
-      }
-      const skills: Record<string, number> = {};
-      data.skills.forEach((s: any) => {
-        if (s && s.name) skills[normalizeSkill(String(s.name))] = Number(s.level) || 1;
-      });
-      const p: Player = { name, skills };
-
-      const previousName = player?.name;
-      if (previousName && previousName.toLowerCase() !== name.toLowerCase()) {
-        // Switching to a different character: this device's tracked
-        // progress belonged to the old one, so start fresh for the new one.
-        setCompleted(new Set());
-        setProgress({});
-        setRecent([]);
-        saveStored("qh-completed", []);
-        saveStored("qh-progress", {});
-        saveStored("qh-recent", []);
-        removeStored("qh-diary-done");
-        removeStored("qh-diary-totals");
-        removeStored("qh-ca-done");
-        removeStoredByPrefix("qh-quest-");
-      }
-
-      setPlayer(p);
-      saveStored("qh-rsn", p);
-    } catch (e: any) {
-      setStatsError(e?.message || "Failed to load stats");
-    } finally {
-      setStatsLoading(false);
-    }
-  };
 
   const checkReq = (req: SkillReq): boolean | null => {
     if (!player) return null;
@@ -906,64 +858,31 @@ export default function QuestHelper() {
             </div>
           )}
 
-          {/* RSN / stats — right under the search bar */}
-          <div style={{ marginTop: 14 }}>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                value={rsn}
-                onChange={(e) => setRsn(e.target.value)}
-                placeholder="RuneScape name…"
-                maxLength={12}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  boxSizing: "border-box",
-                  padding: "11px 14px",
-                  fontSize: 15,
-                  background: C.panelSoft,
-                  color: C.parch,
-                  border: `1px solid ${C.border}`,
-                  borderRadius: 10,
-                  outline: "none",
-                }}
-              />
-              <button
-                onClick={loadStats}
-                disabled={statsLoading || !rsn.trim()}
-                style={{
-                  flexShrink: 0,
-                  padding: "11px 16px",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  background: C.gold,
-                  color: C.ink,
-                  border: "none",
-                  borderRadius: 10,
-                  cursor: "pointer",
-                  opacity: statsLoading || !rsn.trim() ? 0.5 : 1,
-                }}
-              >
-                {statsLoading ? "…" : player ? "Refresh" : "Load"}
-              </button>
-            </div>
-            {player && !statsError && (
-              <div style={{ fontSize: 13, color: C.green, marginTop: 6 }}>
-                ✓ Stats loaded for {player.name}
+          {/* RSN / stats now live on the Profile page — this is just a
+              quick link, showing what's loaded (or a prompt to set it up). */}
+          <Link
+            href="/profile"
+            style={{
+              ...card,
+              display: "block",
+              marginTop: 14,
+              padding: "12px 14px",
+              textDecoration: "none",
+            }}
+          >
+            {player ? (
+              <div style={{ fontSize: 13, color: C.parch }}>
+                👤 <b style={{ color: C.gold }}>{player.name}</b>
                 {combatLevel !== null ? ` · Combat level ${combatLevel}` : ""}
+                <span style={{ color: C.textDim }}> — manage in Profile</span>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: C.textDim }}>
+                👤 Load your RSN in <span style={{ color: C.gold }}>Profile</span> to see whether you
+                meet each quest's skill requirements.
               </div>
             )}
-            {statsError && (
-              <div style={{ fontSize: 13, color: C.red, marginTop: 6 }}>
-                {statsError}
-              </div>
-            )}
-            {!player && !statsError && (
-              <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>
-                With your stats loaded you'll see whether you meet each quest's
-                skill requirements.
-              </div>
-            )}
-          </div>
+          </Link>
 
           <Link
             href="/map"
@@ -1385,8 +1304,11 @@ export default function QuestHelper() {
 
               {quest.meta.skillReqs.length > 0 && !player && (
                 <div style={{ fontSize: 12, color: C.textDim, margin: "4px 0 10px" }}>
-                  Tip: enter your RSN on the home screen and I'll check your levels
-                  automatically.
+                  Tip: enter your RSN in{" "}
+                  <Link href="/profile" style={{ color: C.gold }}>
+                    Profile
+                  </Link>{" "}
+                  and I'll check your levels automatically.
                 </div>
               )}
 
