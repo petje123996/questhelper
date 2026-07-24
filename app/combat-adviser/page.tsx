@@ -74,6 +74,8 @@ export default function CombatAdviserPage() {
   const [filterMinHp, setFilterMinHp] = useState("");
   const [enrichment, setEnrichment] = useState<Record<string, EnrichInfo>>({});
   const enrichAttempted = useRef<Set<string>>(new Set());
+  const [statsDebug, setStatsDebug] = useState<MonsterDebug | null>(null);
+  const [statsDebugLoading, setStatsDebugLoading] = useState<string | null>(null);
 
   useEffect(() => {
     const savedPlayer = loadStored("qh-rsn");
@@ -321,11 +323,25 @@ export default function CombatAdviserPage() {
     setPicture({ name, lookup, loading: false });
   };
 
+  // On-demand diagnostic for when Strength/Max hit stay "?" even after
+  // the enrichment fetch: shows exactly what parseMonsterInfobox's
+  // scanner sees in the label/value rows of the monster's own page, so a
+  // real structural mismatch (different labels, a switch-infobox with
+  // multiple versions, etc.) can be spotted directly instead of guessed
+  // at blind — same tool already used for the bestiary/guide debug views.
+  const debugStats = async (name: string) => {
+    setStatsDebugLoading(name);
+    const result = await debugMonsterPage(name);
+    setStatsDebug(result);
+    setStatsDebugLoading(null);
+  };
+
   const monsterCard = (e: Entry, highlight: boolean) => {
     const enriched = enrichment[e.name];
     const strength = enriched?.strength ?? e.strength;
     const maxHit = enriched?.maxHit ?? e.maxHit;
     const aggressive = enriched?.aggressive;
+    const statsUnknown = statLabel(strength) === "?" && statLabel(maxHit) === "?";
     return (
     <div
       key={e.name}
@@ -381,7 +397,58 @@ export default function CombatAdviserPage() {
         >
           🖼️ Picture / location
         </button>
+        {statsUnknown && (
+          <button
+            onClick={() => debugStats(e.name)}
+            disabled={statsDebugLoading === e.name}
+            style={{
+              padding: "8px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              background: "transparent",
+              color: C.textDim,
+              border: `1px solid ${C.borderSoft}`,
+              borderRadius: 10,
+              cursor: "pointer",
+            }}
+          >
+            {statsDebugLoading === e.name ? "…" : "🔍 Debug"}
+          </button>
+        )}
       </div>
+      {statsDebug && statsDebug.name === e.name && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.gold, marginBottom: 4 }}>
+            {statsDebug.found ? "What the parser sees on this monster's own page (tap to select all):" : "Page not found."}
+          </div>
+          {statsDebug.found && (
+            <pre
+              onClick={(ev) => {
+                const sel = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(ev.currentTarget);
+                sel?.removeAllRanges();
+                sel?.addRange(range);
+              }}
+              style={{
+                fontSize: 10,
+                color: C.textDim,
+                background: C.bg,
+                border: `1px solid ${C.borderSoft}`,
+                borderRadius: 8,
+                padding: 10,
+                overflowX: "auto",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                maxHeight: 260,
+                overflowY: "auto",
+              }}
+            >
+              {statsDebug.rows.length ? statsDebug.rows.join("\n") : "(no table rows with 2+ cells found)"}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
     );
   };

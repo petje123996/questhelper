@@ -42,10 +42,14 @@ function parseMonsterInfobox(html: string): {
 
   for (const table of tables) {
     let hitpoints = 0;
-    let defence = 0;
-    let attack = 0;
-    let strength = 0;
-    let maxHit = 0;
+    // -1 = no row for this stat found in the table (unknown), vs a real
+    // 0 for a genuinely defenceless/harmless monster — matters both for
+    // display ("?" vs "0") and for the Combat Adviser's scoring, which
+    // otherwise reads an unmatched stat as "0 = safest possible".
+    let defence = -1;
+    let attack = -1;
+    let strength = -1;
+    let maxHit = -1;
     let aggressive: boolean | null = null;
     let combatLevel = 0;
     table.querySelectorAll("tr").forEach((tr) => {
