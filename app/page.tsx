@@ -70,6 +70,42 @@ const MINI_FALLBACK = [
   "The General's Shadow", "The Mage Arena", "The Mage Arena II",
 ];
 
+// Fallback Optimal Quest Guide order, used until the live wiki fetch
+// completes (or if it ever fails) — transcribed from the wiki's "Optimal
+// quest guide" page. "Recipe for Disaster/..." subpages are collapsed to
+// the single master quest name (matching the live-fetch parser below),
+// since that's what actually appears in the quest journal / allQuests.
+// "Train X to level Y", "Unlock: ..." and Achievement Diary rows are left
+// out — they aren't quests, so they'd never match anything in allQuests
+// anyway.
+const OPTIMAL_FALLBACK = [
+  "Learning the Ropes", "Cook's Assistant", "Sheep Shearer", "Misthalin Mystery",
+  "Prince Ali Rescue", "The Restless Ghost", "Rune Mysteries", "Imp Catcher",
+  "Witch's Potion", "Gertrude's Cat", "Children of the Sun", "Natural History Quiz",
+  "Daddy's Home", "Dwarf Cannon", "Waterfall Quest", "Tree Gnome Village",
+  "Doric's Quest", "Witch's House", "The Knight's Sword", "The Tourist Trap",
+  "Black Knights' Fortress", "Druidic Ritual", "Recruitment Drive", "Goblin Diplomacy",
+  "Sleeping Giants", "Fight Arena", "Plague City", "Monk's Friend", "Hazeel Cult",
+  "Sheep Herder", "Biohazard", "Tower of Life", "Tribal Totem", "Death Plateau",
+  "Merlin's Crystal", "Holy Grail", "Murder Mystery", "The Grand Tree",
+  "Rag and Bone Man I", "Priest in Peril", "Nature Spirit", "Ghosts Ahoy",
+  "Making History", "The Ides of Milk", "The Lost Tribe", "Death to the Dorgeshuun",
+  "Elemental Workshop I", "Icthlarin's Little Helper", "The Golem",
+  "The Ribbiting Tale of a Lily Pad Labour Dispute", "Lost City",
+  "Fairytale I - Growing Pains", "Recipe for Disaster", "Sea Slug", "Pandemonium",
+  "Prying Times", "Current Affairs", "Fishing Contest", "Mountain Daughter",
+  "Ratcatchers", "The Feud", "Death on the Isle", "Alfred Grimhand's Barcrawl",
+  "Scorpion Catcher", "The Dig Site", "Elemental Workshop II", "A Soul's Bane",
+  "Enter the Abyss", "X Marks the Spot", "Pirate's Treasure", "Client of Kourend",
+  "The Queen of Thieves", "The Depths of Despair", "A Porcine of Interest",
+  "Wanted!", "Shield of Arrav", "Bone Voyage", "Watchtower", "The Giant Dwarf",
+  "Forgettable Tale...", "Another Slice of H.A.M.", "Vampyre Slayer",
+  "Ernest the Chicken", "Demon Slayer", "Shadow of the Storm", "Horror from the Deep",
+  "Animal Magnetism", "Creature of Fenkenstrain", "Big Chompy Bird Hunting",
+  "Jungle Potion", "Shilo Village", "Zogre Flesh Eaters", "Observatory Quest",
+  "Spirits of the Elid", "Garden of Tranquillity", "Enlightened Journey",
+];
+
 // Render text with … bold markers as real bold text
 function renderRich(t: string): React.ReactNode {
   if (!t.includes("")) return t;
@@ -93,7 +129,7 @@ export default function QuestHelper() {
   const [suggest, setSuggest] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [allQuests, setAllQuests] = useState<string[]>(POPULAR);
-  const [optimal, setOptimal] = useState<string[]>([]);
+  const [optimal, setOptimal] = useState<string[]>(OPTIMAL_FALLBACK);
   const [f2p, setF2p] = useState<Set<string>>(new Set(F2P_FALLBACK));
   const [miniSet, setMiniSet] = useState<Set<string>>(new Set(MINI_FALLBACK));
   const [completed, setCompleted] = useState<Set<string>>(new Set());
@@ -174,10 +210,21 @@ export default function QuestHelper() {
           doc.querySelectorAll("table a, ul a, ol a").forEach((a) => {
             const href = a.getAttribute("href") || "";
             if (!href.startsWith("/w/")) return;
-            const page = decodeURIComponent(href.slice(3))
+            let page = decodeURIComponent(href.slice(3))
               .split("#")[0]
               .replace(/_/g, " ");
-            if (!page || page.includes(":") || page.includes("/")) return;
+            if (!page || page.includes(":")) return;
+            // "X/Quick guide" links aren't the quest itself, skip them —
+            // but a real quest subpage like "Recipe for Disaster/Freeing
+            // the Goblin generals" IS part of the quest sequence, just
+            // under its master quest's name (that's the single entry
+            // that actually appears in allQuests/the quest journal), so
+            // collapse to the part before the slash instead of dropping
+            // it — otherwise "Recipe for Disaster" never gets recommended
+            // at all, since only its subpage links appear on this page.
+            if (/\/quick guide$/i.test(page)) return;
+            const slashIdx = page.indexOf("/");
+            if (slashIdx !== -1) page = page.slice(0, slashIdx);
             const key = page.toLowerCase();
             if (seen.has(key)) return;
             seen.add(key);
@@ -186,9 +233,14 @@ export default function QuestHelper() {
           if (names.length > 20) {
             setOptimal(names);
             saveStored("qh-optimal", { ts: Date.now(), names });
+          } else if (!cachedOpt) {
+            setOptimal(OPTIMAL_FALLBACK);
           }
         } catch {
-          /* no adviser, no problem */
+          // A stale-but-present cache already got set above and is still
+          // better than the fallback; only fall back to the hardcoded
+          // list when there was nothing cached to begin with.
+          if (!cachedOpt) setOptimal(OPTIMAL_FALLBACK);
         }
       })();
     }
