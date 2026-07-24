@@ -1,5 +1,5 @@
 import { cleanText } from "./format";
-import { buildLookup, fetchPageHtml } from "./quest";
+import { buildLookup, fetchPageHtml, fetchPageHtmlWithCategories } from "./quest";
 import type { Lookup } from "./quest";
 import { isNonMonsterName } from "./training";
 
@@ -11,6 +11,7 @@ export type MonsterEntry = {
   strength: number;
   maxHit: number;
   aggressive: boolean | null; // null = infobox has no Aggressive row
+  isBoss: boolean;
   combatLevel: number;
   xpPerKill: number;
   lookup: Lookup;
@@ -175,7 +176,7 @@ function parseMonsterInfobox(html: string): {
 // up by the broad link harvest) simply return null here and get filtered.
 export async function fetchMonsterEntry(name: string): Promise<MonsterEntry | null> {
   if (isNonMonsterName(name)) return null;
-  const html = await fetchPageHtml(name);
+  const { html, categories } = await fetchPageHtmlWithCategories(name);
   if (!html) return null;
   const stats = parseMonsterInfobox(html);
   if (!stats) return null;
@@ -187,6 +188,7 @@ export async function fetchMonsterEntry(name: string): Promise<MonsterEntry | nu
     strength: stats.strength,
     maxHit: stats.maxHit,
     aggressive: stats.aggressive,
+    isBoss: categories.some((c) => /boss/i.test(c)),
     combatLevel: stats.combatLevel,
     xpPerKill: stats.hitpoints * XP_PER_HP,
     lookup: buildLookup(name, name, html),

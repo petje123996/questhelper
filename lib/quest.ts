@@ -365,6 +365,24 @@ export async function fetchPageHtml(page: string): Promise<string | null> {
   }
 }
 
+// Same as fetchPageHtml but also grabs the page's wiki categories in the
+// same request (prop=text|categories) — used to detect boss monsters via
+// their "Category:Bosses" membership without a second network round-trip.
+export async function fetchPageHtmlWithCategories(
+  page: string
+): Promise<{ html: string | null; categories: string[] }> {
+  try {
+    const data = await fetchJson(
+      `${API}?action=parse&format=json&origin=*&redirects=1&prop=text%7Ccategories&page=${encodeURIComponent(page)}`
+    );
+    if (data.error) return { html: null, categories: [] };
+    const categories: string[] = (data.parse.categories || []).map((c: any) => String(c["*"] || ""));
+    return { html: data.parse.text["*"], categories };
+  } catch {
+    return { html: null, categories: [] };
+  }
+}
+
 // Images + coordinates for a wiki page, prioritising map/location images —
 // this is how an NPC's roaming-area map (shown on its infobox "Map"
 // section) gets picked up ahead of e.g. its portrait.
