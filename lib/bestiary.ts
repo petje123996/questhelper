@@ -136,7 +136,16 @@ function parseBestiaryTables(html: string, fallbackLevel: number): BestiaryRow[]
         // text, since an icon-only cell has no textContent to speak of.
         let name = "";
         for (let i = nameIdx; i <= nameSpanEnd && i < cells.length; i++) {
-          const t = cleanText(cells[i].textContent || "");
+          const cell = cells[i];
+          const anchors = cell.querySelectorAll("a");
+          // A name cell can carry a second link right after the
+          // monster's own one — e.g. a disambiguating location/variant
+          // note — with no separating whitespace in the markup, which
+          // would otherwise concatenate into something like
+          // "RatStronghold of Security" and fail to resolve as a real
+          // page. The monster's own name is always the first link, so
+          // prefer that specifically once there's more than one.
+          const t = anchors.length > 1 ? cleanText(anchors[0].textContent || "") : cleanText(cell.textContent || "");
           if (t.length > name.length) name = t;
         }
         if (!name) return;
