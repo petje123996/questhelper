@@ -40,6 +40,17 @@ function parseMonsterInfobox(html: string): {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const tables = Array.from(doc.body.querySelectorAll("table"));
 
+  // The infobox's "Combat stats" section (found via a live-device debug
+  // dump) isn't label:value rows at all — it's a single row of six plain
+  // value cells (Hitpoints, Attack, Strength, Defence, Magic, Ranged, in
+  // that fixed order) identified only by icon, sitting under its own
+  // full-width section-title row. Reading it as label:value rows (like
+  // everything else in the infobox) paired adjacent VALUES together
+  // instead — e.g. "58: 12" for Hitpoints/Attack — which is why Strength
+  // and Defence never came out of it. Needs its own pass, tracking
+  // whether the previous row was that "Combat stats" title bar.
+  const COMBAT_STATS_ORDER = ["hitpoints", "attack", "strength", "defence", "magic", "ranged"];
+
   for (const table of tables) {
     let hitpoints = 0;
     // -1 = no row for this stat found in the table (unknown), vs a real
@@ -52,10 +63,33 @@ function parseMonsterInfobox(html: string): {
     let maxHit = -1;
     let aggressive: boolean | null = null;
     let combatLevel = 0;
+    let combatStatsGridFound = false;
+    let nextRowIsCombatStatsGrid = false;
+
     table.querySelectorAll("tr").forEach((tr) => {
       const cells = Array.from(tr.children).filter(
         (c) => c.tagName === "TH" || c.tagName === "TD"
       );
+
+      if (nextRowIsCombatStatsGrid && cells.length >= 2) {
+        cells.forEach((cell, i) => {
+          const m = cleanText(cell.textContent || "").match(/\d+/);
+          if (!m) return;
+          const n = parseInt(m[0], 10);
+          const stat = COMBAT_STATS_ORDER[i];
+          if (stat === "hitpoints") hitpoints = Math.max(hitpoints, n);
+          else if (stat === "attack") attack = Math.max(attack, n);
+          else if (stat === "strength") strength = Math.max(strength, n);
+          else if (stat === "defence") defence = Math.max(defence, n);
+        });
+        combatStatsGridFound = true;
+        nextRowIsCombatStatsGrid = false;
+        return;
+      }
+      nextRowIsCombatStatsGrid =
+        cells.length === 1 && /combat stats/i.test(cleanText(cells[0]?.textContent || ""));
+      if (nextRowIsCombatStatsGrid) return;
+
       if (cells.length < 2) return;
       const label = cleanText(cells[0].textContent || "").toLowerCase();
       if (!label) return;
@@ -66,8 +100,13 @@ function parseMonsterInfobox(html: string): {
         else if (/^no/.test(v)) aggressive = false;
         return;
       }
-      const num = parseInt(value.replace(/[^\d]/g, ""), 10);
-      if (!Number.isFinite(num) || num <= 0) return;
+      // Match the first number rather than stripping+concatenating all
+      // digits — a cell like "3 (melee) / 19 (special)" (multiple Max
+      // hit values) would otherwise parse as garbage (319).
+      const m = value.match(/\d+/);
+      if (!m) return;
+      const num = parseInt(m[0], 10);
+      if (num <= 0) return;
       if (label.includes("hitpoints")) hitpoints = Math.max(hitpoints, num);
       else if (label.startsWith("defence")) defence = Math.max(defence, num);
       else if (label.startsWith("attack")) attack = Math.max(attack, num);
@@ -75,11 +114,13 @@ function parseMonsterInfobox(html: string): {
       else if (label.includes("max hit") || label.includes("maximum hit")) maxHit = Math.max(maxHit, num);
       else if (label.includes("combat level")) combatLevel = Math.max(combatLevel, num);
     });
-    // Require both Hitpoints and Combat level in the same table — a
-    // content table elsewhere on a non-monster page (e.g. a guide
-    // discussing a monster's HP) is far less likely to also carry a
-    // matching Combat level row right next to it.
-    if (hitpoints > 0 && combatLevel > 0) {
+    // Accept the table once Hitpoints is known and we have some other
+    // strong signal this is really the combat infobox: either a Combat
+    // level row (older/simpler infoboxes) or a successfully-read Combat
+    // stats grid (newer layout, which doesn't always show Combat level
+    // as its own table row at all — the game shows it next to the page
+    // title instead).
+    if (hitpoints > 0 && (combatLevel > 0 || combatStatsGridFound)) {
       return { hitpoints, defence, attack, strength, maxHit, aggressive, combatLevel };
     }
   }
@@ -135,11 +176,17 @@ export async function debugMonsterPage(name: string): Promise<MonsterDebug> {
         const cells = Array.from(tr.children).filter(
           (c) => c.tagName === "TH" || c.tagName === "TD"
         );
-        if (cells.length < 2) return;
-        const label = cleanText(cells[0].textContent || "");
-        const value = cleanText(cells[1].textContent || "");
-        if (label) rows.push(`[table ${ti + 1}] ${label}: ${value}`);
+        if (cells.length === 0) return;
+        const texts = cells.map((c) => cleanText(c.textContent || "") || "(icon/empty)");
+        // A single-cell row is a full-width section title (e.g. "Combat
+        // stats"); a wide row (like that section's icon-grid of plain
+        // values) is shown with every cell instead of just the first
+        // two — pairing only cells[0]/cells[1] on a 6-cell stats row is
+        // exactly what misread Hitpoints+Attack as a fake "58: 12" pair.
+        if (cells.length === 1) rows.push(`[table ${ti + 1}] === ${texts[0]} ===`);
+        else if (cells.length === 2) rows.push(`[table ${ti + 1}] ${texts[0]}: ${texts[1]}`);
+        else rows.push(`[table ${ti + 1}] row(${cells.length}): ${texts.join(" | ")}`);
       });
     });
-  return { name, found: true, rows: rows.slice(0, 40) };
+  return { name, found: true, rows: rows.slice(0, 60) };
 }
