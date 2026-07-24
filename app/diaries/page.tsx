@@ -6,7 +6,7 @@ import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn } from "@/lib/theme";
 import { API, fetchJson } from "@/lib/format";
 import { loadStored, saveStored } from "@/lib/storage";
-import { DIARY_REGIONS, parseDiaryPage } from "@/lib/diary";
+import { DIARY_REGIONS, parseDiaryPage, cacheDiaryTasks } from "@/lib/diary";
 import type { DiaryTier } from "@/lib/diary";
 
 const TIER_COLOR: Record<string, string> = {
@@ -46,6 +46,7 @@ export default function DiariesPage() {
       const parsed = parseDiaryPage(data.parse.text["*"]);
       if (!parsed.length) throw new Error("No tasks found on this page.");
       setTiers(parsed);
+      cacheDiaryTasks(r, parsed);
       const total = parsed.reduce((s, t) => s + t.tasks.length, 0);
       setTotals((prev) => {
         const next = { ...prev, [r]: total };

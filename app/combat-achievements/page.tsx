@@ -6,7 +6,7 @@ import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn } from "@/lib/theme";
 import { API, fetchJson } from "@/lib/format";
 import { loadStored, saveStored } from "@/lib/storage";
-import { CA_TIERS, parseCombatAchievements } from "@/lib/combatAchievements";
+import { CA_TIERS, parseCombatAchievements, cacheCaTasks, loadCachedCaTasks } from "@/lib/combatAchievements";
 import type { CATask } from "@/lib/combatAchievements";
 
 const TIER_COLOR: Record<string, string> = {
@@ -32,6 +32,13 @@ export default function CombatAchievementsPage() {
     const d = loadStored("qh-ca-done");
     if (Array.isArray(d)) setDone(new Set(d));
 
+    const cached = loadCachedCaTasks();
+    if (cached && cached.length) {
+      setTasks(cached);
+      setLoading(false);
+      return;
+    }
+
     (async () => {
       setLoading(true);
       setError(null);
@@ -52,6 +59,7 @@ export default function CombatAchievementsPage() {
         const parsed = parseCombatAchievements(data.parse.text["*"]);
         if (!parsed.length) throw new Error("No tasks found on this page.");
         setTasks(parsed);
+        cacheCaTasks(parsed);
       } catch (e: any) {
         setError(e?.message || "Loading failed. Check your connection.");
       } finally {
