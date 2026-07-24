@@ -282,9 +282,16 @@ export default function CombatAdviserPage() {
 
     const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
     const { attackWeight, defenceWeight } = weights;
-    const HP_WEIGHT = 10; // keeps Hitpoints dominant over the Attack/Defence penalty below
+    const HP_WEIGHT = 10; // keeps Hitpoints dominant over the Attack/Defence/Max hit penalty below
+    // Max hit is weighted the same as Attack (both scale with how much
+    // this player's own Defence needs to avoid getting hit) — Attack
+    // level is only accuracy, Max hit is the actual damage taken when a
+    // hit lands, so both matter for "how dangerous is this monster".
     const score = (e: Entry) =>
-      e.hitpoints * HP_WEIGHT - (statOrWorst(e.defence) * defenceWeight + statOrWorst(e.attack) * attackWeight);
+      e.hitpoints * HP_WEIGHT -
+      (statOrWorst(e.defence) * defenceWeight +
+        statOrWorst(e.attack) * attackWeight +
+        statOrWorst(e.maxHit) * attackWeight);
     const ranked = [...pool].sort((a, b) => score(b) - score(a));
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1), filtersEmptied: false };
   }, [entries, combatLevel, weights, hasManualFilters, filterQuery, filterMaxAtk, filterMaxDef, filterMinHp]);
@@ -814,10 +821,10 @@ export default function CombatAdviserPage() {
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
                   From the wiki's Bestiary for your level range, ranked primarily by highest Hitpoints
-                  (≈ XP value per kill), with lowest Attack and Defence as a secondary factor weighted to
-                  your own stats — the lower your Defence, the more a monster's Attack counts against it;
-                  the lower your offence, the more its Defence does. One-hit joke monsters (very low HP
-                  relative to the best options here) are filtered out.
+                  (≈ XP value per kill), with lowest Attack, Max hit and Defence as a secondary factor
+                  weighted to your own stats — the lower your Defence, the more a monster's Attack and Max
+                  hit count against it; the lower your offence, the more its Defence does. One-hit joke
+                  monsters (very low HP relative to the best options here) are filtered out.
                 </div>
                 {membershipCounts && (
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 4, opacity: 0.7 }}>
