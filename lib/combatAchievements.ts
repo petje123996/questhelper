@@ -1,8 +1,25 @@
 import { cleanText } from "./format";
+import { loadStored, saveStored } from "./storage";
 
 export const CA_TIERS = ["Easy", "Medium", "Hard", "Elite", "Master", "Grandmaster"];
 
 export type CATask = { tier: string; text: string; monster: string };
+
+// Cached for 7 days so the dashboard's "next Combat Achievement" summary
+// can read the full task list without a fresh fetch every time.
+const CA_TASKS_CACHE_KEY = "qh-ca-tasks";
+const CA_TASKS_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function cacheCaTasks(tasks: CATask[]): void {
+  saveStored(CA_TASKS_CACHE_KEY, { ts: Date.now(), tasks });
+}
+
+export function loadCachedCaTasks(): CATask[] | null {
+  const cached = loadStored(CA_TASKS_CACHE_KEY);
+  if (!cached || !Array.isArray(cached.tasks)) return null;
+  if (Date.now() - (cached.ts || 0) > CA_TASKS_CACHE_MS) return null;
+  return cached.tasks;
+}
 
 // Combat Achievements are listed in one large sortable table with a tier
 // column, a monster column and a task/description column. We read the

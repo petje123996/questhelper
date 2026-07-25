@@ -9,6 +9,7 @@ import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 const LINKS: { href: string; label: string; icon: string }[] = [
   { href: "/", label: "Quests", icon: "⚔️" },
+  { href: "/dashboard", label: "Today", icon: "📋" },
   { href: "/map", label: "World map", icon: "🗺️" },
   { href: "/combat-adviser", label: "Combat Adviser", icon: "🛡️" },
   { href: "/prices", label: "GE Prices", icon: "💰" },

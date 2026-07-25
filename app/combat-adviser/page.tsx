@@ -15,20 +15,12 @@ import { debugBestiaryPage, fetchBestiaryRows } from "@/lib/bestiary";
 import type { BestiaryDebug, BracketAttempt, MembershipCounts } from "@/lib/bestiary";
 import { mapHref } from "@/lib/map";
 import { fmtNum, wikiUrl } from "@/lib/format";
+import { computeCombatWeights, filterByLevelRange, filterTrainable, rankCombatEntries } from "@/lib/combatScore";
+import type { AccountType, CombatEntry } from "@/lib/combatScore";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
 import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
-type AccountType = "main" | "ironman" | "hcim";
-type Entry = {
-  name: string;
-  hitpoints: number;
-  defence: number;
-  attack: number;
-  strength: number;
-  maxHit: number;
-  combatLevel: number;
-  xpPerKill: number;
-};
+type Entry = CombatEntry;
 
 // -1 means "column not found" (unknown); anything else non-numeric means
 // a stale cached entry saved before this stat existed on Entry.
@@ -195,70 +187,18 @@ export default function CombatAdviserPage() {
     return def <= 20 && offence - def >= 15;
   }, [player]);
 
-  // How much a monster's Attack/Defence should count against it depends on
-  // the player fighting it, not just the monster: a low-Defence account
-  // (a pure, most extremely) takes real risk from a hard-hitting monster,
-  // so monster Attack should be weighted heavily for them — a tanky
-  // high-Defence account can shrug the same hits off, so it barely matters.
-  // Symmetrically, a low-offence account struggles to punch through a
-  // high-Defence monster (slow kills, more food/time spent), so monster
-  // Defence should count for more against them than it does for a
-  // high-offence account that kills anything quickly regardless. Hardcore
-  // Ironman gets extra weight on Attack on top of that, since a death is
-  // unrecoverable regardless of how tanky the stats look on paper.
-  const weights = useMemo(() => {
-    if (!player) return { attackWeight: 1, defenceWeight: 1 };
-    const def = player.skills.defence ?? 1;
-    const offence = Math.max(
-      player.skills.attack ?? 1,
-      player.skills.strength ?? 1,
-      player.skills.ranged ?? 1,
-      player.skills.magic ?? 1
-    );
-    const defenceRatio = Math.min(1, def / 60);
-    const offenceRatio = Math.min(1, offence / 60);
-    let attackWeight = 1 + (1 - defenceRatio) * 3; // 1 (tanky) .. 4 (pure)
-    const defenceWeight = 1 + (1 - offenceRatio) * 2; // 1 (strong offence) .. 3 (weak offence)
-    if (accountType === "hcim") attackWeight *= 1.5; // permadeath: extra caution
-    return { attackWeight, defenceWeight };
-  }, [player, accountType]);
+  // Weighting and scoring live in lib/combatScore.ts, shared with the
+  // dashboard's "best training spot" summary so both always agree.
+  const weights = useMemo(() => computeCombatWeights(player, accountType), [player, accountType]);
 
-  // Score each monster with Hitpoints (≈ XP/kill) as the PRIMARY factor —
-  // the recommendation should be "the most HP you can get", not "the
-  // safest monster available" — and Attack/Defence as secondary
-  // deductions on top, weighted by what actually matters for THIS
-  // player's own combat stats (see `weights` above). This has to be an
-  // additive score (hp*10 - penalties), not a ratio: dividing HP by
-  // (1 + stats) let a high-Defence/Attack monster's penalty overwhelm a
-  // much bigger HP advantage, e.g. a 50 HP monster losing to a 10 HP one
-  // just for being statistically "safer" — exactly the opposite of what
-  // was asked for. Monsters with an unknown Attack/Defence (-1, column
-  // missing on that table) are scored as worst-case rather than
-  // best-case, so missing data can't falsely push them to the top.
   const hasManualFilters = !!(filterQuery.trim() || filterMaxAtk || filterMaxDef || filterMinHp);
 
   const { best, alternatives, filtersEmptied } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
       return { best: null as Entry | null, alternatives: [] as Entry[], filtersEmptied: false };
     }
-    const levelMin = Math.max(1, combatLevel - 60);
-    const levelMax = combatLevel + 20;
-    const inRange = entries.filter(
-      (e) => e.combatLevel === 0 || (e.combatLevel >= levelMin && e.combatLevel <= levelMax)
-    );
-    const levelPool = inRange.length ? inRange : entries;
-    // A near-zero-stat monster (Seagull: 1 HP, ~0 Attack/Defence) can win
-    // the safety-weighted score purely by having nothing to avoid, even
-    // though one hit ends the fight and it's worth almost no XP — a
-    // one-hit joke monster, not a real training target. Drop anything
-    // whose Hitpoints (≈ XP/kill) sits far below the best the pool has to
-    // offer for this level range, so only monsters actually worth
-    // fighting compete for the recommendation. Falls back to the
-    // unfiltered pool if that would leave nothing at all.
-    const maxHp = Math.max(...levelPool.map((e) => e.hitpoints));
-    const hpFloor = Math.max(3, maxHp * 0.15);
-    const trainable = levelPool.filter((e) => e.hitpoints >= hpFloor);
-    const autoPool = trainable.length ? trainable : levelPool;
+    const levelPool = filterByLevelRange(entries, combatLevel);
+    const autoPool = filterTrainable(levelPool);
 
     // Manual filters (search + max Attack/Defence + min HP) are an
     // explicit user override, applied on top of the automatic picks —
@@ -280,19 +220,7 @@ export default function CombatAdviserPage() {
     }
     const pool = hasManualFilters ? manualFiltered : autoPool;
 
-    const statOrWorst = (v: number) => (typeof v !== "number" || !Number.isFinite(v) || v < 0 ? 9999 : v);
-    const { attackWeight, defenceWeight } = weights;
-    const HP_WEIGHT = 10; // keeps Hitpoints dominant over the Attack/Defence/Max hit penalty below
-    // Max hit is weighted the same as Attack (both scale with how much
-    // this player's own Defence needs to avoid getting hit) — Attack
-    // level is only accuracy, Max hit is the actual damage taken when a
-    // hit lands, so both matter for "how dangerous is this monster".
-    const score = (e: Entry) =>
-      e.hitpoints * HP_WEIGHT -
-      (statOrWorst(e.defence) * defenceWeight +
-        statOrWorst(e.attack) * attackWeight +
-        statOrWorst(e.maxHit) * attackWeight);
-    const ranked = [...pool].sort((a, b) => score(b) - score(a));
+    const ranked = rankCombatEntries(pool, weights);
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1), filtersEmptied: false };
   }, [entries, combatLevel, weights, hasManualFilters, filterQuery, filterMaxAtk, filterMaxDef, filterMinHp]);
 
