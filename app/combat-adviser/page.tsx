@@ -43,6 +43,19 @@ const ACCOUNT_TYPES: { id: AccountType; label: string }[] = [
   { id: "hcim", label: "Hardcore" },
 ];
 
+type SortStat = "default" | "attack" | "strength" | "defence" | "hitpoints" | "maxHit" | "aggressive";
+type SortDir = "desc" | "asc";
+
+const SORT_STATS: { id: SortStat; label: string }[] = [
+  { id: "default", label: "Best match (recommended)" },
+  { id: "attack", label: "Attack" },
+  { id: "strength", label: "Strength" },
+  { id: "defence", label: "Defence" },
+  { id: "hitpoints", label: "HP" },
+  { id: "maxHit", label: "Max hit" },
+  { id: "aggressive", label: "Aggressive" },
+];
+
 export default function CombatAdviserPage() {
   const router = useRouter();
   const [player, setPlayer] = useState<Player | null>(null);
@@ -64,6 +77,8 @@ export default function CombatAdviserPage() {
   const [filterMaxAtk, setFilterMaxAtk] = useState("");
   const [filterMaxDef, setFilterMaxDef] = useState("");
   const [filterMinHp, setFilterMinHp] = useState("");
+  const [sortStat, setSortStat] = useState<SortStat>("default");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [enrichment, setEnrichment] = useState<Record<string, EnrichInfo>>({});
   const enrichAttempted = useRef<Set<string>>(new Set());
   const [statsDebug, setStatsDebug] = useState<MonsterDebug | null>(null);
@@ -192,6 +207,53 @@ export default function CombatAdviserPage() {
   const weights = useMemo(() => computeCombatWeights(player, accountType), [player, accountType]);
 
   const hasManualFilters = !!(filterQuery.trim() || filterMaxAtk || filterMaxDef || filterMinHp);
+  const hasCustomSort = sortStat !== "default";
+
+  // Manual stat sort (dropdown + Highest/Lowest first) overrides the
+  // automatic weighted ranking below. Attack/Strength/Defence/HP/Max hit
+  // come straight off the entry (as already shown in its chips); an
+  // unknown value (-1, shown as "?") always sinks to the bottom regardless
+  // of direction, same as everywhere else stats are displayed. Aggressive
+  // isn't part of the bestiary data at all — it's only known once a
+  // monster has been lazily enriched (see EnrichInfo below), so anything
+  // not yet enriched is likewise treated as unknown and sorts last.
+  const sortEntries = (pool: Entry[]): Entry[] => {
+    if (sortStat === "aggressive") {
+      const rank = (e: Entry) => {
+        const a = enrichment[e.name]?.aggressive;
+        if (a === null || a === undefined) return 2;
+        const isAggro = a === true;
+        return (sortDir === "desc") === isAggro ? 0 : 1;
+      };
+      return [...pool].sort((a, b) => rank(a) - rank(b));
+    }
+    const statValue = (e: Entry): number => {
+      switch (sortStat) {
+        case "attack":
+          return e.attack;
+        case "strength":
+          return e.strength;
+        case "defence":
+          return e.defence;
+        case "hitpoints":
+          return e.hitpoints;
+        case "maxHit":
+          return e.maxHit;
+        default:
+          return 0;
+      }
+    };
+    const isKnown = (v: number) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+    return [...pool].sort((a, b) => {
+      const av = statValue(a);
+      const bv = statValue(b);
+      const aKnown = isKnown(av);
+      const bKnown = isKnown(bv);
+      if (aKnown !== bKnown) return aKnown ? -1 : 1;
+      if (!aKnown) return 0;
+      return sortDir === "desc" ? bv - av : av - bv;
+    });
+  };
 
   const { best, alternatives, filtersEmptied } = useMemo(() => {
     if (!entries || !entries.length || combatLevel === null) {
@@ -220,9 +282,23 @@ export default function CombatAdviserPage() {
     }
     const pool = hasManualFilters ? manualFiltered : autoPool;
 
-    const ranked = rankCombatEntries(pool, weights);
+    const ranked = hasCustomSort ? sortEntries(pool) : rankCombatEntries(pool, weights);
     return { best: ranked[0] ?? null, alternatives: ranked.slice(1), filtersEmptied: false };
-  }, [entries, combatLevel, weights, hasManualFilters, filterQuery, filterMaxAtk, filterMaxDef, filterMinHp]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    entries,
+    combatLevel,
+    weights,
+    hasManualFilters,
+    filterQuery,
+    filterMaxAtk,
+    filterMaxDef,
+    filterMinHp,
+    hasCustomSort,
+    sortStat,
+    sortDir,
+    enrichment,
+  ]);
 
   // Fetch Strength/Max hit/Aggressive per monster actually being shown,
   // capped so a long list doesn't fire off dozens of requests at once —
@@ -291,7 +367,7 @@ export default function CombatAdviserPage() {
     >
       {highlight && (
         <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>
-          🎯 RECOMMENDED FOR YOU
+          {hasCustomSort ? "🏆 TOP OF SORT" : "🎯 RECOMMENDED FOR YOU"}
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -556,7 +632,13 @@ export default function CombatAdviserPage() {
                 }}
               >
                 <span>
-                  🔎 Filters{hasManualFilters ? ` (${[filterQuery.trim(), filterMaxAtk, filterMaxDef, filterMinHp].filter(Boolean).length} active)` : ""}
+                  🔎 Filters
+                  {hasManualFilters || hasCustomSort
+                    ? ` (${
+                        [filterQuery.trim(), filterMaxAtk, filterMaxDef, filterMinHp].filter(Boolean).length +
+                        (hasCustomSort ? 1 : 0)
+                      } active)`
+                    : ""}
                 </span>
                 <span>{filterOpen ? "▲" : "▼"}</span>
               </button>
@@ -579,6 +661,57 @@ export default function CombatAdviserPage() {
                       marginBottom: 8,
                     }}
                   />
+
+                  <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Sort by</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <select
+                      value={sortStat}
+                      onChange={(e) => setSortStat(e.target.value as SortStat)}
+                      style={{
+                        flex: 2,
+                        boxSizing: "border-box",
+                        padding: "8px 10px",
+                        fontSize: 14,
+                        background: C.panelSoft,
+                        color: C.parch,
+                        border: `1px solid ${C.border}`,
+                        borderRadius: 8,
+                        outline: "none",
+                      }}
+                    >
+                      {SORT_STATS.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div style={{ flex: 1, display: "flex", gap: 4, opacity: hasCustomSort ? 1 : 0.4 }}>
+                      {[
+                        { v: "desc" as SortDir, label: "⬆️ Highest" },
+                        { v: "asc" as SortDir, label: "⬇️ Lowest" },
+                      ].map((o) => (
+                        <button
+                          key={o.v}
+                          disabled={!hasCustomSort}
+                          onClick={() => setSortDir(o.v)}
+                          style={{
+                            flex: 1,
+                            padding: "8px 4px",
+                            borderRadius: 8,
+                            background: sortDir === o.v && hasCustomSort ? C.gold : "transparent",
+                            color: sortDir === o.v && hasCustomSort ? C.ink : C.gold,
+                            border: `1px solid ${sortDir === o.v && hasCustomSort ? C.gold : C.borderSoft}`,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: hasCustomSort ? "pointer" : "default",
+                          }}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div style={{ display: "flex", gap: 8 }}>
                     {[
                       { label: "Max Atk", value: filterMaxAtk, set: setFilterMaxAtk },
@@ -607,13 +740,15 @@ export default function CombatAdviserPage() {
                       </div>
                     ))}
                   </div>
-                  {hasManualFilters && (
+                  {(hasManualFilters || hasCustomSort) && (
                     <button
                       onClick={() => {
                         setFilterQuery("");
                         setFilterMaxAtk("");
                         setFilterMaxDef("");
                         setFilterMinHp("");
+                        setSortStat("default");
+                        setSortDir("desc");
                       }}
                       style={{ ...headBtn, width: "100%", marginTop: 10 }}
                     >
@@ -766,11 +901,22 @@ export default function CombatAdviserPage() {
                 {alternatives.map((e) => monsterCard(e, false))}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  From the wiki's Bestiary for your level range, ranked primarily by highest Hitpoints
-                  (≈ XP value per kill), with lowest Attack, Max hit and Defence as a secondary factor
-                  weighted to your own stats — the lower your Defence, the more a monster's Attack and Max
-                  hit count against it; the lower your offence, the more its Defence does. One-hit joke
-                  monsters (very low HP relative to the best options here) are filtered out.
+                  {hasCustomSort ? (
+                    <>
+                      From the wiki's Bestiary for your level range, sorted by{" "}
+                      {SORT_STATS.find((s) => s.id === sortStat)?.label} ({sortDir === "desc" ? "highest" : "lowest"}
+                      {" "}first). Monsters with an unknown value for this stat are listed last. One-hit joke
+                      monsters (very low HP relative to the best options here) are filtered out.
+                    </>
+                  ) : (
+                    <>
+                      From the wiki's Bestiary for your level range, ranked primarily by highest Hitpoints
+                      (≈ XP value per kill), with lowest Attack, Max hit and Defence as a secondary factor
+                      weighted to your own stats — the lower your Defence, the more a monster's Attack and Max
+                      hit count against it; the lower your offence, the more its Defence does. One-hit joke
+                      monsters (very low HP relative to the best options here) are filtered out.
+                    </>
+                  )}
                 </div>
                 {membershipCounts && (
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 4, opacity: 0.7 }}>
