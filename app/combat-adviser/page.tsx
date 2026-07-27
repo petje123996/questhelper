@@ -79,6 +79,7 @@ export default function CombatAdviserPage() {
   const [filterMinHp, setFilterMinHp] = useState("");
   const [sortStat, setSortStat] = useState<SortStat>("default");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [showAllLevels, setShowAllLevels] = useState(false);
   const [enrichment, setEnrichment] = useState<Record<string, EnrichInfo>>({});
   const enrichAttempted = useRef<Set<string>>(new Set());
   const [statsDebug, setStatsDebug] = useState<MonsterDebug | null>(null);
@@ -105,7 +106,8 @@ export default function CombatAdviserPage() {
     // label used to default to "members", which could make every monster
     // look like a Members monster and leave F2P mode empty) — versioned so
     // a cache built under the old, wrong classification isn't reused.
-    const cacheKey = `qh-bestiary-v3-${members ? "p2p" : "f2p"}-${Math.floor(combatLevel / 10)}`;
+    const rangeKey = showAllLevels ? "all" : String(Math.floor(combatLevel / 10));
+    const cacheKey = `qh-bestiary-v3-${members ? "p2p" : "f2p"}-${rangeKey}`;
     setEntries(null);
     const cached = loadStored(cacheKey);
     if (cached && Array.isArray(cached.entries) && cached.entries.length > 0) {
@@ -122,8 +124,8 @@ export default function CombatAdviserPage() {
       setBestiaryDebugOpen(false);
       setMembershipCounts(null);
       try {
-        setLoadingLabel("Loading the bestiary…");
-        const { rows, attempted, membershipCounts: counts } = await fetchBestiaryRows(combatLevel);
+        setLoadingLabel(showAllLevels ? "Loading the full bestiary…" : "Loading the bestiary…");
+        const { rows, attempted, membershipCounts: counts } = await fetchBestiaryRows(combatLevel, showAllLevels);
         setBracketAttempts(attempted);
         setMembershipCounts(counts);
         const modeFiltered = rows.filter((r) => r.members === null || r.members === members);
@@ -185,7 +187,7 @@ export default function CombatAdviserPage() {
         setLoading(false);
       }
     })();
-  }, [members, combatLevel]);
+  }, [members, combatLevel, showAllLevels]);
 
   // Rough "pure" heuristic: Defence well below your offensive stats. Shown
   // as a note; the actual ranking below picks up the same underlying stats
@@ -259,8 +261,12 @@ export default function CombatAdviserPage() {
     if (!entries || !entries.length || combatLevel === null) {
       return { best: null as Entry | null, alternatives: [] as Entry[], filtersEmptied: false };
     }
-    const levelPool = filterByLevelRange(entries, combatLevel);
-    const autoPool = filterTrainable(levelPool);
+    // "All levels" skips both the level-range narrowing and the one-hit
+    // joke-monster HP floor — the latter is computed as a % of the pool's
+    // own max HP, which would wipe out almost everything once max-level
+    // bosses are mixed into a pool spanning every combat level.
+    const levelPool = showAllLevels ? entries : filterByLevelRange(entries, combatLevel);
+    const autoPool = showAllLevels ? levelPool : filterTrainable(levelPool);
 
     // Manual filters (search + max Attack/Defence + min HP) are an
     // explicit user override, applied on top of the automatic picks —
@@ -294,6 +300,7 @@ export default function CombatAdviserPage() {
     filterMaxAtk,
     filterMaxDef,
     filterMinHp,
+    showAllLevels,
     hasCustomSort,
     sortStat,
     sortDir,
@@ -620,6 +627,39 @@ export default function CombatAdviserPage() {
               </div>
             )}
 
+            <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, marginBottom: 6 }}>
+              MONSTER RANGE
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+              {[
+                { v: false, label: "🎯 Near your level" },
+                { v: true, label: "🌍 All levels" },
+              ].map((o) => (
+                <button
+                  key={String(o.v)}
+                  onClick={() => setShowAllLevels(o.v)}
+                  style={{
+                    flex: 1,
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: showAllLevels === o.v ? C.gold : "transparent",
+                    color: showAllLevels === o.v ? C.ink : C.gold,
+                    border: `1px solid ${showAllLevels === o.v ? C.gold : C.borderSoft}`,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 14 }}>
+              {showAllLevels
+                ? "Showing the wiki's full Bestiary across every combat level, including monsters far outside a sensible training range for you."
+                : "Only monsters trainable near your combat level are shown here, not the wiki's full Bestiary (which spans levels 1–400+) — switch to \"All levels\" to browse everything."}
+            </div>
+
             <div style={{ marginBottom: 14 }}>
               <button
                 onClick={() => setFilterOpen((v) => !v)}
@@ -901,22 +941,24 @@ export default function CombatAdviserPage() {
                 {alternatives.map((e) => monsterCard(e, false))}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
+                  From the wiki's Bestiary{showAllLevels ? ", across every combat level" : " for your level range"}
                   {hasCustomSort ? (
                     <>
-                      From the wiki's Bestiary for your level range, sorted by{" "}
-                      {SORT_STATS.find((s) => s.id === sortStat)?.label} ({sortDir === "desc" ? "highest" : "lowest"}
-                      {" "}first). Monsters with an unknown value for this stat are listed last. One-hit joke
-                      monsters (very low HP relative to the best options here) are filtered out.
+                      , sorted by {SORT_STATS.find((s) => s.id === sortStat)?.label} (
+                      {sortDir === "desc" ? "highest" : "lowest"} first). Monsters with an unknown value for this
+                      stat are listed last.
                     </>
                   ) : (
                     <>
-                      From the wiki's Bestiary for your level range, ranked primarily by highest Hitpoints
-                      (≈ XP value per kill), with lowest Attack, Max hit and Defence as a secondary factor
-                      weighted to your own stats — the lower your Defence, the more a monster's Attack and Max
-                      hit count against it; the lower your offence, the more its Defence does. One-hit joke
-                      monsters (very low HP relative to the best options here) are filtered out.
+                      , ranked primarily by highest Hitpoints (≈ XP value per kill), with lowest Attack, Max hit
+                      and Defence as a secondary factor weighted to your own stats — the lower your Defence, the
+                      more a monster's Attack and Max hit count against it; the lower your offence, the more its
+                      Defence does.
                     </>
-                  )}
+                  )}{" "}
+                  {showAllLevels
+                    ? "One-hit joke monsters aren't filtered out in \"All levels\" mode."
+                    : "One-hit joke monsters (very low HP relative to the best options here) are filtered out."}
                 </div>
                 {membershipCounts && (
                   <div style={{ fontSize: 10, color: C.textDim, marginTop: 4, opacity: 0.7 }}>

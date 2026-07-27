@@ -22,14 +22,22 @@ const MEMBER_BRACKETS: [number, number][] = [
   [151, 160], [161, 170], [171, 180], [181, 190], [191, 200], [201, 400],
 ];
 
-function bracketsForLevel(level: number): { title: string; mid: number }[] {
-  const lo = Math.max(1, level - 60);
-  // Combat level under-represents a low-Defence account's real striking
-  // power (Defence/Hitpoints/Prayer all feed into it, Attack/Strength
-  // only partly) — a wide upper bound means a pure with a modest combat
-  // level still sees the higher-level-but-weak-Defence monsters they can
-  // actually fight safely, not just ones near their nominal level.
-  const hi = level + 60;
+function bracketsForLevel(level: number, allLevels: boolean): { title: string; mid: number }[] {
+  // allLevels fetches every bracket on the wiki regardless of the
+  // player's level — used when the "All levels" toggle is on, so someone
+  // can browse the full Bestiary instead of just what's near their level.
+  const [lo, hi] = allLevels
+    ? [1, Infinity]
+    : [
+        Math.max(1, level - 60),
+        // Combat level under-represents a low-Defence account's real
+        // striking power (Defence/Hitpoints/Prayer all feed into it,
+        // Attack/Strength only partly) — a wide upper bound means a pure
+        // with a modest combat level still sees the higher-level-but-weak-
+        // Defence monsters they can actually fight safely, not just ones
+        // near their nominal level.
+        level + 60,
+      ];
   return MEMBER_BRACKETS.filter(([a, b]) => b >= lo && a <= hi).map(([a, b]) => ({
     title: `Bestiary/Levels ${a} to ${b}`,
     mid: Math.round((a + b) / 2),
@@ -237,8 +245,8 @@ export type BestiaryFetchResult = {
 // per-level-bracket pages (distinguished by the Members column), so we
 // always fetch the same bracket pages and let the caller filter by mode
 // — no need for a separately-guessed F2P page title.
-export async function fetchBestiaryRows(combatLevel: number): Promise<BestiaryFetchResult> {
-  const brackets = bracketsForLevel(combatLevel);
+export async function fetchBestiaryRows(combatLevel: number, allLevels = false): Promise<BestiaryFetchResult> {
+  const brackets = bracketsForLevel(combatLevel, allLevels);
   const attempted: BracketAttempt[] = [];
   const results = await Promise.all(
     brackets.map(async (b) => {
