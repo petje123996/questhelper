@@ -21,7 +21,17 @@ import {
 } from "@/lib/theme";
 import { loadStored, saveStored, removeStored, storageKey } from "@/lib/storage";
 import { API, capitalize, fmtNum, fetchJson, normalizeSkill, wikiUrl } from "@/lib/format";
-import { calcCombat, enemyLevel, parseGuide, parseGallery, parseRewardStats, extractCoords, fetchLookup } from "@/lib/quest";
+import {
+  calcCombat,
+  enemyLevel,
+  parseGuide,
+  parseGallery,
+  parseRewardStats,
+  extractCoords,
+  fetchLookup,
+  fetchQuestCategories,
+  matchQuestName,
+} from "@/lib/quest";
 import { mapHref } from "@/lib/map";
 import type {
   SkillReq,
@@ -184,55 +194,18 @@ export default function QuestHelper() {
       if (Date.now() - (cached.ts || 0) < 7 * 24 * 60 * 60 * 1000) return;
     }
     (async () => {
-      const fetchCategory = async (category: string): Promise<string[]> => {
-        const names: string[] = [];
-        let cont: string | null = null;
-        for (let i = 0; i < 3; i++) {
-          const url =
-            `${API}?action=query&format=json&origin=*&list=categorymembers` +
-            `&cmtitle=${encodeURIComponent("Category:" + category)}` +
-            `&cmtype=page&cmlimit=500` +
-            (cont ? `&cmcontinue=${encodeURIComponent(cont)}` : "");
-          const data: any = await fetchJson(url);
-          (data.query?.categorymembers || []).forEach((m: any) => {
-            const t = String(m.title || "");
-            if (
-              t &&
-              !t.includes("/") &&
-              !t.includes(":") &&
-              !/^(Quests|Quest points|Quest List|Miniquests)$/i.test(t)
-            ) {
-              names.push(t);
-            }
-          });
-          cont = data.continue?.cmcontinue || null;
-          if (!cont) break;
-        }
-        return names;
-      };
-      try {
-        const [quests, free, minis] = await Promise.all([
-          fetchCategory("Quests"),
-          fetchCategory("Free-to-play quests").catch(() => [] as string[]),
-          fetchCategory("Miniquests").catch(() => [] as string[]),
-        ]);
-        if (quests.length > 10) {
-          const all = Array.from(new Set([...quests, ...minis])).sort((a, b) =>
-            a.localeCompare(b)
-          );
-          setAllQuests(all);
-          if (free.length > 5) setF2p(new Set(free));
-          if (minis.length > 0) setMiniSet(new Set(minis));
-          saveStored("qh-questlist2", {
-            ts: Date.now(),
-            all,
-            f2p: free.length > 5 ? free : F2P_FALLBACK,
-            mini: minis.length > 0 ? minis : MINI_FALLBACK,
-          });
-        }
-      } catch {
-        /* fallbacks remain */
-      }
+      const result = await fetchQuestCategories();
+      if (!result) return; // fallbacks remain
+      const { all, f2p: free, mini: minis } = result;
+      setAllQuests(all);
+      if (free.length > 5) setF2p(new Set(free));
+      if (minis.length > 0) setMiniSet(new Set(minis));
+      saveStored("qh-questlist2", {
+        ts: Date.now(),
+        all,
+        f2p: free.length > 5 ? free : F2P_FALLBACK,
+        mini: minis.length > 0 ? minis : MINI_FALLBACK,
+      });
     })();
   }, []);
 
@@ -330,15 +303,7 @@ export default function QuestHelper() {
   };
 
   // Check whether a requirement line is a quest name
-  const matchQuest = (req: string): string | null => {
-    const r = req.toLowerCase();
-    const exact = allQuests.find((n) => n.toLowerCase() === r);
-    if (exact) return exact;
-    const partial = allQuests.find(
-      (n) => n.length >= 8 && r.includes(n.toLowerCase())
-    );
-    return partial || null;
-  };
+  const matchQuest = (req: string): string | null => matchQuestName(req, allQuests);
 
   const updateRecent = useCallback(
     (name: string, done: number, total: number) => {

@@ -416,3 +416,66 @@ export async function fetchLookup(page: string, title: string): Promise<Lookup> 
   if (!html) return { title, page, loading: false, images: [], coords: null, error: "Page not found." };
   return buildLookup(page, title, html);
 }
+
+export type QuestCategories = { all: string[]; f2p: string[]; mini: string[] };
+
+async function fetchQuestCategory(category: string): Promise<string[]> {
+  const names: string[] = [];
+  let cont: string | null = null;
+  for (let i = 0; i < 3; i++) {
+    const url =
+      `${API}?action=query&format=json&origin=*&list=categorymembers` +
+      `&cmtitle=${encodeURIComponent("Category:" + category)}` +
+      `&cmtype=page&cmlimit=500` +
+      (cont ? `&cmcontinue=${encodeURIComponent(cont)}` : "");
+    const data: any = await fetchJson(url);
+    (data.query?.categorymembers || []).forEach((m: any) => {
+      const t = String(m.title || "");
+      if (
+        t &&
+        !t.includes("/") &&
+        !t.includes(":") &&
+        !/^(Quests|Quest points|Quest List|Miniquests)$/i.test(t)
+      ) {
+        names.push(t);
+      }
+    });
+    cont = data.continue?.cmcontinue || null;
+    if (!cont) break;
+  }
+  return names;
+}
+
+// Full quest list (+ F2P/Miniquest membership) from the wiki's quest
+// categories, grouped like the in-game quest tab. Shared by the home
+// page's quest browser and the Quest Path Planner so both agree on the
+// same quest names without fetching the categories twice.
+export async function fetchQuestCategories(): Promise<QuestCategories | null> {
+  try {
+    const [quests, free, minis] = await Promise.all([
+      fetchQuestCategory("Quests"),
+      fetchQuestCategory("Free-to-play quests").catch(() => [] as string[]),
+      fetchQuestCategory("Miniquests").catch(() => [] as string[]),
+    ]);
+    if (quests.length <= 10) return null;
+    const all = Array.from(new Set([...quests, ...minis])).sort((a, b) => a.localeCompare(b));
+    return { all, f2p: free, mini: minis };
+  } catch {
+    return null;
+  }
+}
+
+// Checks whether a free-text requirement line (e.g. "Completion of Dragon
+// Slayer") names one of the known quests — an exact match, or the quest
+// name appearing inside the line. The length >= 8 floor on the partial
+// match avoids short quest names (rare, but they exist) matching
+// unrelated substrings. Shared between the quest wizard (marking a
+// requirement satisfied by a completed quest) and the Quest Path Planner
+// (building the prerequisite chain).
+export function matchQuestName(req: string, allQuests: string[]): string | null {
+  const r = req.toLowerCase();
+  const exact = allQuests.find((n) => n.toLowerCase() === r);
+  if (exact) return exact;
+  const partial = allQuests.find((n) => n.length >= 8 && r.includes(n.toLowerCase()));
+  return partial || null;
+}
