@@ -229,18 +229,24 @@ export default function CombatAdviserPage() {
       };
       return [...pool].sort((a, b) => rank(a) - rank(b));
     }
+    // Strength and Max hit are rarely present as their own columns on the
+    // Bestiary bracket tables (see EnrichInfo above) — e.strength/e.maxHit
+    // are mostly -1 there, while the value actually shown in the monster
+    // card comes from the lazily-fetched enrichment once available. Sort
+    // on that same resolved value so the order matches what's on screen.
     const statValue = (e: Entry): number => {
+      const enriched = enrichment[e.name];
       switch (sortStat) {
         case "attack":
           return e.attack;
         case "strength":
-          return e.strength;
+          return enriched?.strength ?? e.strength;
         case "defence":
           return e.defence;
         case "hitpoints":
           return e.hitpoints;
         case "maxHit":
-          return e.maxHit;
+          return enriched?.maxHit ?? e.maxHit;
         default:
           return 0;
       }

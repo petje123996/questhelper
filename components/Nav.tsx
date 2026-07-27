@@ -12,6 +12,8 @@ const LINKS: { href: string; label: string; icon: string }[] = [
   { href: "/dashboard", label: "Today", icon: "📋" },
   { href: "/map", label: "World map", icon: "🗺️" },
   { href: "/combat-adviser", label: "Combat Adviser", icon: "🛡️" },
+  { href: "/skill-adviser", label: "Skill Adviser", icon: "🎓" },
+  { href: "/quest-planner", label: "Quest Path Planner", icon: "🧭" },
   { href: "/prices", label: "GE Prices", icon: "💰" },
   { href: "/diaries", label: "Achievement Diaries", icon: "📔" },
   { href: "/combat-achievements", label: "Combat Achievements", icon: "🗡️" },
