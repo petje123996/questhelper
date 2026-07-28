@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn, chip } from "@/lib/theme";
-import { loadStored, saveStored } from "@/lib/storage";
+import { loadStored } from "@/lib/storage";
 import { capitalize, fmtNum, normalizeSkill, wikiUrl } from "@/lib/format";
 import { fetchLookup } from "@/lib/quest";
 import type { Player, Lookup } from "@/lib/quest";
@@ -26,9 +26,6 @@ export default function SkillAdviserPage() {
   const [player, setPlayer] = useState<Player | null>(null);
   const [skill, setSkill] = useState<string>(TRAINABLE_SKILLS[0]);
   const [members, setMembers] = useState(true);
-  const [result, setResult] = useState<TrainingResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [picture, setPicture] = useState<{ name: string; lookup: Lookup | null; loading: boolean } | null>(null);
 
   useEffect(() => {
@@ -39,41 +36,11 @@ export default function SkillAdviserPage() {
   useCloseOnBack(!!picture, () => setPicture(null));
   useLockBodyScroll(!!picture);
 
-  useEffect(() => {
-    // Page resolution depends on the game mode too (Free-to-play vs
-    // Pay-to-play guides are usually separate pages), so a mode switch
-    // needs its own fetch, not just a client-side re-filter.
-    const cacheKey = `qh-training-v2-${skill}-${members ? "p2p" : "f2p"}`;
-    setResult(null);
-    setError(null);
-    const cached = loadStored(cacheKey);
-    if (cached && cached.result) {
-      setResult(cached.result);
-      if (Date.now() - (cached.ts || 0) < 7 * 24 * 60 * 60 * 1000) return;
-    }
-    (async () => {
-      setLoading(true);
-      try {
-        const found = await fetchTrainingMethods(skill, members);
-        if (found.source === "none") {
-          throw new Error(
-            found.page
-              ? "Found the page but couldn't recognise a Level/XP table on it."
-              : "No overview page found for this skill on the wiki."
-          );
-        }
-        setResult(found);
-        saveStored(cacheKey, { ts: Date.now(), result: found });
-      } catch (e: any) {
-        setError(e?.message || "Loading failed. Check your connection.");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [skill, members]);
-
+  // Reads the hand-verified database in lib/skillDatabase.ts — no
+  // network fetch, so this is instant.
+  const result: TrainingResult = useMemo(() => fetchTrainingMethods(skill), [skill]);
   const currentLevel = player ? player.skills[normalizeSkill(skill)] ?? 1 : null;
-  const methods = result?.methods ?? null;
+  const methods = result.methods;
 
   const { usable, upcoming, unknownLevel } = useMemo(() => {
     if (!methods) return { usable: [] as TrainingMethod[], upcoming: [] as TrainingMethod[], unknownLevel: [] as TrainingMethod[] };
@@ -236,21 +203,26 @@ export default function SkillAdviserPage() {
               ))}
             </div>
 
-            {loading && <div style={{ textAlign: "center", padding: 30, color: C.textDim }}>Loading training methods…</div>}
-
-            {error && !loading && (
-              <div style={{ ...card, borderColor: C.red, padding: 16, color: C.parch }}>
-                <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>Couldn't load training data</div>
-                {error}
-                <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  This reads the Level/XP table on the skill's own wiki page (e.g. Mining's "Ore table") —
-                  not every skill's page lays that table out the same way, so a mismatch here means that
-                  page's table structure needs a closer look.
-                </div>
+            {result.source === "none" ? (
+              <div style={{ ...card, padding: 16, color: C.textDim, textAlign: "center" }}>
+                {capitalize(skill)} isn't in the training database yet.
+                {result.guidePage && (
+                  <>
+                    {" "}
+                    Check the{" "}
+                    <a
+                      href={wikiUrl(result.guidePage)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: C.gold }}
+                    >
+                      {capitalize(skill)} wiki page ↗
+                    </a>{" "}
+                    directly for now.
+                  </>
+                )}
               </div>
-            )}
-
-            {!loading && !error && result && methods && (
+            ) : (
               <>
                 {usable.length === 0 ? (
                   <div style={{ ...card, padding: 16, color: C.textDim, textAlign: "center" }}>
@@ -307,10 +279,10 @@ export default function SkillAdviserPage() {
                 )}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  From the wiki's {capitalize(skill)} page, ranked by highest XP per action among options
-                  you can already use at your current level. This is XP per action, not XP per hour — how
-                  fast you can repeat that action isn't in this data, so it's not a true speed comparison
-                  between very different activities.
+                  From a hand-verified list, ranked by highest XP per action among options you can already
+                  use at your current level. This is XP per action, not XP per hour — how fast you can
+                  repeat that action isn't in this data, so it's not a true speed comparison between very
+                  different activities.
                   {result.guidePage && (
                     <>
                       {" "}
@@ -320,7 +292,7 @@ export default function SkillAdviserPage() {
                         rel="noopener noreferrer"
                         style={{ color: C.gold }}
                       >
-                        Read the full {capitalize(skill)} training guide ↗
+                        Open {capitalize(skill)} on the wiki ↗
                       </a>
                     </>
                   )}
