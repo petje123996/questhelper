@@ -58,8 +58,8 @@ export default function SkillAdviserPage() {
         if (found.source === "none") {
           throw new Error(
             found.page
-              ? `Found the guide page but couldn't recognise its layout (neither a data table nor method headings).`
-              : "No training guide page found for this skill/mode combination on the wiki."
+              ? "Found the page but couldn't recognise a Level/XP table on it."
+              : "No overview page found for this skill on the wiki."
           );
         }
         setResult(found);
@@ -78,24 +78,19 @@ export default function SkillAdviserPage() {
   const { usable, upcoming, unknownLevel } = useMemo(() => {
     if (!methods) return { usable: [] as TrainingMethod[], upcoming: [] as TrainingMethod[], unknownLevel: [] as TrainingMethod[] };
     const modeFiltered = methods.filter((m) => members || m.membersOnly !== true);
-    if (result?.source === "headings") {
-      // No level/XP data to rank or filter by — just present every
-      // method the guide lists, in the order it lists them.
-      return { usable: modeFiltered, upcoming: [] as TrainingMethod[], unknownLevel: [] as TrainingMethod[] };
-    }
     const known = modeFiltered.filter((m) => m.levelReq >= 1);
     const unknown = modeFiltered.filter((m) => m.levelReq < 1);
     const level = currentLevel ?? 1;
     const usableNow = known
       .filter((m) => m.levelReq <= level)
       .sort((a, b) => {
-        const aXp = a.xpPerHour >= 0 ? a.xpPerHour : -1;
-        const bXp = b.xpPerHour >= 0 ? b.xpPerHour : -1;
+        const aXp = a.xp >= 0 ? a.xp : -1;
+        const bXp = b.xp >= 0 ? b.xp : -1;
         return bXp - aXp;
       });
     const locked = known.filter((m) => m.levelReq > level).sort((a, b) => a.levelReq - b.levelReq);
     return { usable: usableNow, upcoming: locked.slice(0, UPCOMING_LIMIT), unknownLevel: unknown };
-  }, [methods, members, currentLevel, result?.source]);
+  }, [methods, members, currentLevel]);
 
   const openPicture = async (m: TrainingMethod) => {
     const page = m.page || m.name;
@@ -104,7 +99,7 @@ export default function SkillAdviserPage() {
     setPicture({ name: m.name, lookup, loading: false });
   };
 
-  const methodRow = (m: TrainingMethod, highlight: boolean, ranked: boolean) => (
+  const methodRow = (m: TrainingMethod, highlight: boolean) => (
     <div
       key={m.name}
       style={{
@@ -117,7 +112,7 @@ export default function SkillAdviserPage() {
     >
       {highlight && (
         <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>
-          {ranked ? "🎯 BEST XP/HR FOR YOU" : "📖 FROM THE GUIDE"}
+          🎯 BEST XP FOR YOU
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -134,7 +129,7 @@ export default function SkillAdviserPage() {
         {m.levelReq >= 1 && <span style={{ fontSize: 12, color: C.textDim }}>{methodLabel(m)}</span>}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
-        {m.xpPerHour >= 0 && <span style={chip}>📈 {fmtNum(m.xpPerHour)} xp/hr</span>}
+        {m.xp >= 0 && <span style={chip}>📈 {fmtNum(m.xp)} xp</span>}
         {m.membersOnly === true && <span style={chip}>💎 Members</span>}
         {m.membersOnly === false && <span style={chip}>🔓 F2P</span>}
       </div>
@@ -245,26 +240,18 @@ export default function SkillAdviserPage() {
 
             {error && !loading && (
               <div style={{ ...card, borderColor: C.red, padding: 16, color: C.parch }}>
-                <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>Couldn't load training methods</div>
+                <div style={{ color: C.red, fontWeight: 700, marginBottom: 4 }}>Couldn't load training data</div>
                 {error}
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  Skill training pages vary a lot in layout across the wiki, so this parser is more likely
-                  to miss a page's table format than the Combat Adviser's Bestiary parser was — if this
-                  keeps happening for {capitalize(skill)}, that's the table structure to check.
+                  This reads the Level/XP table on the skill's own wiki page (e.g. Mining's "Ore table") —
+                  not every skill's page lays that table out the same way, so a mismatch here means that
+                  page's table structure needs a closer look.
                 </div>
               </div>
             )}
 
             {!loading && !error && result && methods && (
               <>
-                {result.source === "headings" && (
-                  <div style={{ ...card, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: C.textDim }}>
-                    ℹ️ This guide is written as text with a method per section, not a data table — so there's
-                    no level or XP/hr figure to filter or rank by. Methods below are listed in the guide's
-                    own order (roughly low-to-high level).
-                  </div>
-                )}
-
                 {usable.length === 0 ? (
                   <div style={{ ...card, padding: 16, color: C.textDim, textAlign: "center" }}>
                     No methods found at or below your current {capitalize(skill)} level — see "Unlocks soon"
@@ -272,15 +259,13 @@ export default function SkillAdviserPage() {
                   </div>
                 ) : (
                   <>
-                    {methodRow(usable[0], true, result.source === "table")}
+                    {methodRow(usable[0], true)}
                     {usable.length > 1 && (
                       <>
                         <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-                          {result.source === "table"
-                            ? `Other methods you can use now (${usable.length - 1})`
-                            : `More methods from the guide (${usable.length - 1})`}
+                          Other options you can use now ({usable.length - 1})
                         </div>
-                        {usable.slice(1).map((m) => methodRow(m, false, result.source === "table"))}
+                        {usable.slice(1).map((m) => methodRow(m, false))}
                       </>
                     )}
                   </>
@@ -306,7 +291,7 @@ export default function SkillAdviserPage() {
                         <span style={{ fontSize: 13, color: C.text }}>{m.name}</span>
                         <span style={{ fontSize: 12, color: C.textDim }}>
                           {methodLabel(m)}
-                          {m.xpPerHour >= 0 && ` · ${fmtNum(m.xpPerHour)} xp/hr`}
+                          {m.xp >= 0 && ` · ${fmtNum(m.xp)} xp`}
                         </span>
                       </div>
                     ))}
@@ -315,26 +300,27 @@ export default function SkillAdviserPage() {
 
                 {unknownLevel.length > 0 && (
                   <div style={{ fontSize: 11, color: C.textDim, marginTop: 14 }}>
-                    {unknownLevel.length} method{unknownLevel.length === 1 ? "" : "s"} on this page didn't have a
+                    {unknownLevel.length} item{unknownLevel.length === 1 ? "" : "s"} on this page didn't have a
                     readable level requirement, so {unknownLevel.length === 1 ? "it isn't" : "they aren't"} shown
                     above: {unknownLevel.map((m) => m.name).join(", ")}.
                   </div>
                 )}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  {result.source === "table" ? (
-                    <>
-                      From the wiki's {capitalize(skill)} training guide, ranked by highest XP/hr among
-                      methods you can already use at your current level.
-                    </>
-                  ) : (
-                    <>From the wiki's {capitalize(skill)} training guide.</>
-                  )}
-                  {result.page && (
+                  From the wiki's {capitalize(skill)} page, ranked by highest XP per action among options
+                  you can already use at your current level. This is XP per action, not XP per hour — how
+                  fast you can repeat that action isn't in this data, so it's not a true speed comparison
+                  between very different activities.
+                  {result.guidePage && (
                     <>
                       {" "}
-                      <a href={wikiUrl(result.page)} target="_blank" rel="noopener noreferrer" style={{ color: C.gold }}>
-                        Open the full guide ↗
+                      <a
+                        href={wikiUrl(result.guidePage)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: C.gold }}
+                      >
+                        Read the full {capitalize(skill)} training guide ↗
                       </a>
                     </>
                   )}
