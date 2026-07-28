@@ -16,6 +16,7 @@ import { useCloseOnBack } from "@/hooks/useCloseOnBack";
 import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 
 const UPCOMING_LIMIT = 8;
+const OTHER_OPTIONS_LIMIT = 25;
 
 function methodLabel(m: TrainingMethod): string {
   return m.levelReq >= 1 ? `Lvl ${m.levelReq}` : "Lvl ?";
@@ -237,7 +238,12 @@ export default function SkillAdviserPage() {
                         <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
                           Other options you can use now ({usable.length - 1})
                         </div>
-                        {usable.slice(1).map((m) => methodRow(m, false))}
+                        {usable.slice(1, 1 + OTHER_OPTIONS_LIMIT).map((m) => methodRow(m, false))}
+                        {usable.length - 1 > OTHER_OPTIONS_LIMIT && (
+                          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 10 }}>
+                            + {usable.length - 1 - OTHER_OPTIONS_LIMIT} more, lower XP than these.
+                          </div>
+                        )}
                       </>
                     )}
                   </>
@@ -279,7 +285,7 @@ export default function SkillAdviserPage() {
                 )}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  From a hand-verified list, ranked by highest XP per action among options you can already
+                  From the wiki's own XP tables (see lib/skillDatabase.ts for how), ranked by highest XP per action among options you can already
                   use at your current level. This is XP per action, not XP per hour — how fast you can
                   repeat that action isn't in this data, so it's not a true speed comparison between very
                   different activities.
