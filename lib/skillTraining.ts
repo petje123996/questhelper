@@ -3,43 +3,50 @@ import { fetchPageHtml } from "./quest";
 
 export type TrainingMethod = {
   name: string;
-  page: string | null; // wiki page for the method itself, if it links to one
-  levelReq: number; // -1 = no level column found on this table (unknown)
-  xpPerHour: number; // -1 = no xp/rate column found on this table (unknown)
+  page: string | null; // wiki page for the item/method itself, if it links to one
+  levelReq: number; // -1 = unknown
+  xp: number; // -1 = unknown. XP per action, not per hour — see fetchTrainingMethods.
   membersOnly: boolean | null; // null = couldn't tell from this row
 };
 
-// Wiki page titles for each skill's training guide. Attack/Strength/
-// Defence/Hitpoints/Ranged/Magic aren't here — those are trained by
-// fighting monsters, already covered by the Combat Adviser.
-export const SKILL_TRAINING_PAGES: Record<string, string> = {
-  prayer: "Prayer training",
-  runecraft: "Runecraft training",
-  crafting: "Crafting training",
-  mining: "Mining training",
-  smithing: "Smithing training",
-  fishing: "Fishing training",
-  cooking: "Cooking training",
-  firemaking: "Firemaking training",
-  woodcutting: "Woodcutting training",
-  agility: "Agility training",
-  herblore: "Herblore training",
-  thieving: "Thieving training",
-  fletching: "Fletching training",
-  slayer: "Slayer training",
-  farming: "Farming training",
-  construction: "Construction training",
-  hunter: "Hunter training",
+export type TrainingResult = {
+  methods: TrainingMethod[];
+  page: string | null; // page the level/XP table was read from, if any
+  guidePage: string | null; // the written mode-specific guide, for a "read more" link only
+  source: "table" | "none";
 };
 
-export const TRAINABLE_SKILLS = Object.keys(SKILL_TRAINING_PAGES);
+// Display label matching the wiki's own page titles. Attack/Strength/
+// Defence/Hitpoints/Ranged/Magic aren't here — those are trained by
+// fighting monsters, already covered by the Combat Adviser.
+const SKILL_LABELS: Record<string, string> = {
+  prayer: "Prayer",
+  runecraft: "Runecraft",
+  crafting: "Crafting",
+  mining: "Mining",
+  smithing: "Smithing",
+  fishing: "Fishing",
+  cooking: "Cooking",
+  firemaking: "Firemaking",
+  woodcutting: "Woodcutting",
+  agility: "Agility",
+  herblore: "Herblore",
+  thieving: "Thieving",
+  fletching: "Fletching",
+  slayer: "Slayer",
+  farming: "Farming",
+  construction: "Construction",
+  hunter: "Hunter",
+};
 
-// Same idea as firstNumber in lib/bestiary.ts, but comma-aware — XP/hr
-// figures on these pages are written as full numbers ("40,000"), and a
-// plain \d+ match would only catch the "40" before the comma breaks it.
+export const TRAINABLE_SKILLS = Object.keys(SKILL_LABELS);
+
+// Same idea as firstNumber in lib/bestiary.ts, but comma-aware — XP
+// figures on these pages are written as full numbers ("1,678"), and a
+// plain \d+ match would only catch the "1" before the comma breaks it.
 function firstNumberLoose(s: string): number {
   const m = s.replace(/,/g, "").match(/\d+(\.\d+)?/);
-  return m ? Math.round(parseFloat(m[0])) : -1;
+  return m ? Math.round(parseFloat(m[0]) * 10) / 10 : -1;
 }
 
 // Column headers are icons on some of these tables (same sortable-table
@@ -60,20 +67,20 @@ function headerLabel(cell: Element): string {
   return parts.join(" ").toLowerCase();
 }
 
-// Parses every sortable "Training methods"-style table on a skill guide
-// page. These pages are far less uniform than the Bestiary's per-bracket
-// tables (some skills split methods across several tables by level range,
-// others use one big table, wording for the rate column varies a lot), so
-// this leans on tolerant keyword matching rather than a fixed layout —
-// expect it to need the same kind of follow-up fixes the Bestiary parser
-// did once it's checked against real pages.
-function parseTrainingTables(html: string): TrainingMethod[] {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const root = doc.body;
-  root
-    .querySelectorAll(".navbox, .references, #toc, .toc, .mw-editsection, sup, style, script")
-    .forEach((el) => el.remove());
+function pageFromHref(href: string | null | undefined): string | null {
+  if (!href || !href.startsWith("/w/")) return null;
+  return decodeURIComponent(href.slice(3)).split("#")[0].replace(/_/g, " ");
+}
 
+// Parses a Level+XP reference table — the shape confirmed against
+// Mining's "Ore table" (Item / Mining Level / Exp / GE Price / Members).
+// The item-name column's header varies per skill ("Item", "Ore", "Fish",
+// "Log", ...) with no consistent keyword, so it falls back to the first
+// column when no method/activity-style header is found; in that case
+// both a level AND an XP column are required before accepting the table,
+// so a stray unrelated table with some column merely called "Level"
+// doesn't get misread as training data.
+function parseLevelXpTables(root: Element): TrainingMethod[] {
   const methods: TrainingMethod[] = [];
 
   root.querySelectorAll("table").forEach((table) => {
@@ -89,12 +96,17 @@ function parseTrainingTables(html: string): TrainingMethod[] {
     });
 
     const levelIdx = labels.findIndex((h) => h.includes("level"));
-    const nameIdx = labels.findIndex(
-      (h) => h.includes("method") || h.includes("activity") || h.includes("action") || h.includes("training")
-    );
-    if (levelIdx === -1 || nameIdx === -1) return; // not a training-methods table
-
     const rateIdx = labels.findIndex((h) => h.includes("xp") || h.includes("experience") || h.includes("rate"));
+
+    let nameIdx = labels.findIndex(
+      (h) => h.includes("method") || h.includes("activity") || h.includes("action") || h.includes("item")
+    );
+    const nameWasGuessed = nameIdx === -1;
+    if (nameWasGuessed) nameIdx = 0;
+
+    if (levelIdx === -1) return; // no level column at all — not this kind of table
+    if (nameWasGuessed && rateIdx === -1) return; // a guessed name column needs an XP column too, to be sure
+
     const membersIdx = labels.findIndex((h) => h.includes("member") || h.includes("f2p"));
 
     Array.from(table.querySelectorAll("tr"))
@@ -114,7 +126,7 @@ function parseTrainingTables(html: string): TrainingMethod[] {
         if (!name || name.length < 2) return;
 
         const levelReq = firstNumberLoose(cleanText(cells[levelIdx]?.textContent || ""));
-        const xpPerHour = rateIdx >= 0 ? firstNumberLoose(cleanText(cells[rateIdx]?.textContent || "")) : -1;
+        const xp = rateIdx >= 0 ? firstNumberLoose(cleanText(cells[rateIdx]?.textContent || "")) : -1;
 
         let membersOnly: boolean | null = null;
         if (membersIdx >= 0 && cells[membersIdx]) {
@@ -125,30 +137,61 @@ function parseTrainingTables(html: string): TrainingMethod[] {
           else if (cell.querySelector("img, svg")) membersOnly = true;
         }
 
-        const href = anchor?.getAttribute("href") || "";
-        const page = href.startsWith("/w/")
-          ? decodeURIComponent(href.slice(3)).split("#")[0].replace(/_/g, " ")
-          : null;
-
-        methods.push({ name, page, levelReq, xpPerHour, membersOnly });
+        methods.push({ name, page: pageFromHref(anchor?.getAttribute("href")), levelReq, xp, membersOnly });
       });
   });
 
-  // A method can appear on more than one bracket table on longer guides
-  // (e.g. listed again once a faster variant unlocks) — keep whichever
-  // row actually carries an XP/hr figure.
+  // The same item can appear in more than one table on a page (e.g. an
+  // "Ores" table and a separate "Gems" table) — keep whichever row
+  // actually carries an XP figure.
   const byName = new Map<string, TrainingMethod>();
   methods.forEach((m) => {
     const existing = byName.get(m.name);
-    if (!existing || m.xpPerHour > existing.xpPerHour) byName.set(m.name, m);
+    if (!existing || m.xp > existing.xp) byName.set(m.name, m);
   });
   return Array.from(byName.values());
 }
 
-export async function fetchTrainingMethods(skill: string): Promise<TrainingMethod[]> {
-  const title = SKILL_TRAINING_PAGES[skill];
-  if (!title) return [];
-  const html = await fetchPageHtml(title);
-  if (!html) return [];
-  return parseTrainingTables(html);
+function stripHtml(html: string): Element {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const root = doc.body;
+  root
+    .querySelectorAll(".navbox, .references, #toc, .toc, .mw-editsection, sup, style, script")
+    .forEach((el) => el.remove());
+  return root;
+}
+
+// Two separate wiki pages come into play per skill: the skill's own
+// overview page (e.g. "Mining") usually has a straightforward Level+XP
+// reference table for every trainable item — confirmed against Mining's
+// "Ore table" — and is used as the actual data source here. The written,
+// mode-specific training guide ("Pay-to-play Mining training" /
+// "Free-to-play Mining training") is prose organised under headings that
+// differ per skill (confirmed different between Cooking and Mining, with
+// no shared section title to key off), too unreliable to parse
+// structurally — so it's only surfaced as a "read the full guide" link,
+// not a data source.
+export async function fetchTrainingMethods(skill: string, members: boolean): Promise<TrainingResult> {
+  const label = SKILL_LABELS[skill];
+  if (!label) return { methods: [], page: null, guidePage: null, source: "none" };
+
+  const mainHtml = await fetchPageHtml(label);
+  const methods = mainHtml ? parseLevelXpTables(stripHtml(mainHtml)) : [];
+
+  const guideCandidates = [members ? `Pay-to-play ${label} training` : `Free-to-play ${label} training`, `${label} training`];
+  let guidePage: string | null = null;
+  for (const title of guideCandidates) {
+    const html = await fetchPageHtml(title);
+    if (html) {
+      guidePage = title;
+      break;
+    }
+  }
+
+  return {
+    methods,
+    page: mainHtml ? label : null,
+    guidePage,
+    source: methods.length ? "table" : "none",
+  };
 }
