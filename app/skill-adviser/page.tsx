@@ -10,7 +10,7 @@ import { capitalize, fmtNum, normalizeSkill, wikiUrl } from "@/lib/format";
 import { fetchLookup } from "@/lib/quest";
 import type { Player, Lookup } from "@/lib/quest";
 import { fetchTrainingMethods, TRAINABLE_SKILLS } from "@/lib/skillTraining";
-import type { TrainingMethod } from "@/lib/skillTraining";
+import type { TrainingMethod, TrainingResult } from "@/lib/skillTraining";
 import { mapHref } from "@/lib/map";
 import { useCloseOnBack } from "@/hooks/useCloseOnBack";
 import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
@@ -26,7 +26,7 @@ export default function SkillAdviserPage() {
   const [player, setPlayer] = useState<Player | null>(null);
   const [skill, setSkill] = useState<string>(TRAINABLE_SKILLS[0]);
   const [members, setMembers] = useState(true);
-  const [methods, setMethods] = useState<TrainingMethod[] | null>(null);
+  const [result, setResult] = useState<TrainingResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picture, setPicture] = useState<{ name: string; lookup: Lookup | null; loading: boolean } | null>(null);
@@ -40,34 +40,49 @@ export default function SkillAdviserPage() {
   useLockBodyScroll(!!picture);
 
   useEffect(() => {
-    const cacheKey = `qh-training-v1-${skill}`;
-    setMethods(null);
+    // Page resolution depends on the game mode too (Free-to-play vs
+    // Pay-to-play guides are usually separate pages), so a mode switch
+    // needs its own fetch, not just a client-side re-filter.
+    const cacheKey = `qh-training-v2-${skill}-${members ? "p2p" : "f2p"}`;
+    setResult(null);
     setError(null);
     const cached = loadStored(cacheKey);
-    if (cached && Array.isArray(cached.methods) && cached.methods.length > 0) {
-      setMethods(cached.methods);
+    if (cached && cached.result) {
+      setResult(cached.result);
       if (Date.now() - (cached.ts || 0) < 7 * 24 * 60 * 60 * 1000) return;
     }
     (async () => {
       setLoading(true);
       try {
-        const found = await fetchTrainingMethods(skill);
-        if (!found.length) throw new Error("No training methods found for this skill on the wiki.");
-        setMethods(found);
-        saveStored(cacheKey, { ts: Date.now(), methods: found });
+        const found = await fetchTrainingMethods(skill, members);
+        if (found.source === "none") {
+          throw new Error(
+            found.page
+              ? `Found the guide page but couldn't recognise its layout (neither a data table nor method headings).`
+              : "No training guide page found for this skill/mode combination on the wiki."
+          );
+        }
+        setResult(found);
+        saveStored(cacheKey, { ts: Date.now(), result: found });
       } catch (e: any) {
         setError(e?.message || "Loading failed. Check your connection.");
       } finally {
         setLoading(false);
       }
     })();
-  }, [skill]);
+  }, [skill, members]);
 
   const currentLevel = player ? player.skills[normalizeSkill(skill)] ?? 1 : null;
+  const methods = result?.methods ?? null;
 
   const { usable, upcoming, unknownLevel } = useMemo(() => {
     if (!methods) return { usable: [] as TrainingMethod[], upcoming: [] as TrainingMethod[], unknownLevel: [] as TrainingMethod[] };
     const modeFiltered = methods.filter((m) => members || m.membersOnly !== true);
+    if (result?.source === "headings") {
+      // No level/XP data to rank or filter by — just present every
+      // method the guide lists, in the order it lists them.
+      return { usable: modeFiltered, upcoming: [] as TrainingMethod[], unknownLevel: [] as TrainingMethod[] };
+    }
     const known = modeFiltered.filter((m) => m.levelReq >= 1);
     const unknown = modeFiltered.filter((m) => m.levelReq < 1);
     const level = currentLevel ?? 1;
@@ -80,7 +95,7 @@ export default function SkillAdviserPage() {
       });
     const locked = known.filter((m) => m.levelReq > level).sort((a, b) => a.levelReq - b.levelReq);
     return { usable: usableNow, upcoming: locked.slice(0, UPCOMING_LIMIT), unknownLevel: unknown };
-  }, [methods, members, currentLevel]);
+  }, [methods, members, currentLevel, result?.source]);
 
   const openPicture = async (m: TrainingMethod) => {
     const page = m.page || m.name;
@@ -89,7 +104,7 @@ export default function SkillAdviserPage() {
     setPicture({ name: m.name, lookup, loading: false });
   };
 
-  const methodRow = (m: TrainingMethod, highlight: boolean) => (
+  const methodRow = (m: TrainingMethod, highlight: boolean, ranked: boolean) => (
     <div
       key={m.name}
       style={{
@@ -102,7 +117,7 @@ export default function SkillAdviserPage() {
     >
       {highlight && (
         <div style={{ fontSize: 12, color: C.goldDim, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>
-          🎯 BEST XP/HR FOR YOU
+          {ranked ? "🎯 BEST XP/HR FOR YOU" : "📖 FROM THE GUIDE"}
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -116,7 +131,7 @@ export default function SkillAdviserPage() {
         >
           {m.name}
         </span>
-        <span style={{ fontSize: 12, color: C.textDim }}>{methodLabel(m)}</span>
+        {m.levelReq >= 1 && <span style={{ fontSize: 12, color: C.textDim }}>{methodLabel(m)}</span>}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: highlight ? 8 : 6 }}>
         {m.xpPerHour >= 0 && <span style={chip}>📈 {fmtNum(m.xpPerHour)} xp/hr</span>}
@@ -240,8 +255,16 @@ export default function SkillAdviserPage() {
               </div>
             )}
 
-            {!loading && !error && methods && (
+            {!loading && !error && result && methods && (
               <>
+                {result.source === "headings" && (
+                  <div style={{ ...card, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: C.textDim }}>
+                    ℹ️ This guide is written as text with a method per section, not a data table — so there's
+                    no level or XP/hr figure to filter or rank by. Methods below are listed in the guide's
+                    own order (roughly low-to-high level).
+                  </div>
+                )}
+
                 {usable.length === 0 ? (
                   <div style={{ ...card, padding: 16, color: C.textDim, textAlign: "center" }}>
                     No methods found at or below your current {capitalize(skill)} level — see "Unlocks soon"
@@ -249,13 +272,15 @@ export default function SkillAdviserPage() {
                   </div>
                 ) : (
                   <>
-                    {methodRow(usable[0], true)}
+                    {methodRow(usable[0], true, result.source === "table")}
                     {usable.length > 1 && (
                       <>
                         <div style={{ ...goldTitle, fontSize: 15, marginBottom: 8 }}>
-                          Other methods you can use now ({usable.length - 1})
+                          {result.source === "table"
+                            ? `Other methods you can use now (${usable.length - 1})`
+                            : `More methods from the guide (${usable.length - 1})`}
                         </div>
-                        {usable.slice(1).map((m) => methodRow(m, false))}
+                        {usable.slice(1).map((m) => methodRow(m, false, result.source === "table"))}
                       </>
                     )}
                   </>
@@ -297,8 +322,22 @@ export default function SkillAdviserPage() {
                 )}
 
                 <div style={{ fontSize: 11, color: C.textDim, marginTop: 10 }}>
-                  From the wiki's {capitalize(skill)} training guide, ranked by highest XP/hr among methods
-                  you can already use at your current level.
+                  {result.source === "table" ? (
+                    <>
+                      From the wiki's {capitalize(skill)} training guide, ranked by highest XP/hr among
+                      methods you can already use at your current level.
+                    </>
+                  ) : (
+                    <>From the wiki's {capitalize(skill)} training guide.</>
+                  )}
+                  {result.page && (
+                    <>
+                      {" "}
+                      <a href={wikiUrl(result.page)} target="_blank" rel="noopener noreferrer" style={{ color: C.gold }}>
+                        Open the full guide ↗
+                      </a>
+                    </>
+                  )}
                 </div>
               </>
             )}
