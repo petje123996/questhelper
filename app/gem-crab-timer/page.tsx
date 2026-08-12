@@ -40,22 +40,32 @@ function playBeep() {
 // service worker's showNotification() instead, which also works fine on
 // desktop, so we always prefer it and only fall back to the plain
 // constructor if no registration is available.
-async function notify(title: string, body: string, registration: ServiceWorkerRegistration | null) {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
+async function notify(
+  title: string,
+  body: string,
+  registration: ServiceWorkerRegistration | null
+): Promise<string> {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return "Notifications aren't supported in this browser.";
+  }
+  if (Notification.permission !== "granted") {
+    return `Permission is "${Notification.permission}", not granted.`;
+  }
   const options: NotificationOptions = { body, tag: "gem-crab-timer" };
   if (registration) {
     try {
       await registration.showNotification(title, options);
-      return;
-    } catch {
+      return "Sent via the service worker. If nothing appeared on screen, check Android's notification settings for Chrome (and this site's notification permission in Chrome's site settings).";
+    } catch (err) {
       /* fall through to the direct constructor */
     }
   }
   try {
     new Notification(title, options);
-  } catch {
-    /* notification unavailable on this browser */
+    return "Sent via the direct Notification() constructor.";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Failed to show a notification: ${message}`;
   }
 }
 
@@ -65,6 +75,8 @@ export default function GemCrabTimerPage() {
   const [running, setRunning] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("default");
   const [swStatus, setSwStatus] = useState<"pending" | "ready" | "unavailable">("pending");
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
   const endTimeRef = useRef<number | null>(null);
   const warnedRef = useRef(false);
   const wakeLockRef = useRef<any>(null);
@@ -160,6 +172,19 @@ export default function GemCrabTimerPage() {
     if (typeof window === "undefined" || !("Notification" in window)) return;
     const result = await Notification.requestPermission();
     setPermission(result);
+  };
+
+  const sendTestNotification = async () => {
+    setTesting(true);
+    setTestResult(null);
+    if (permission === "default") await requestPermission();
+    const result = await notify(
+      "Test notification",
+      "If this shows up as a real system notification, it works.",
+      registrationRef.current
+    );
+    setTestResult(result);
+    setTesting(false);
   };
 
   const start = async () => {
@@ -314,13 +339,27 @@ export default function GemCrabTimerPage() {
           </button>
         )}
         {permission === "granted" && (
-          <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
-            {swStatus === "ready"
-              ? "🔔 Notifications ready"
-              : swStatus === "pending"
-                ? "⏳ Setting up notifications…"
-                : "⚠️ Notifications may not fire on this browser — the beep and tab title still will"}
-          </div>
+          <>
+            <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
+              {swStatus === "ready"
+                ? "🔔 Notifications ready"
+                : swStatus === "pending"
+                  ? "⏳ Setting up notifications…"
+                  : "⚠️ Notifications may not fire on this browser — the beep and tab title still will"}
+            </div>
+            <button
+              onClick={sendTestNotification}
+              disabled={testing}
+              style={{ ...ghostBtn, cursor: testing ? "default" : "pointer", fontSize: 12 }}
+            >
+              {testing ? "Sending…" : "🔔 Send test notification now"}
+            </button>
+            {testResult && (
+              <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", lineHeight: 1.5 }}>
+                {testResult}
+              </div>
+            )}
+          </>
         )}
         {permission === "unsupported" && (
           <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
