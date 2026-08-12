@@ -33,5 +33,18 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: "maskable",
       },
     ],
+    shortcuts: [
+      {
+        name: "Gem Crab Timer",
+        url: "/gem-crab-timer",
+        icons: [
+          {
+            src: "/gem-crab-timer/icon.svg",
+            sizes: "192x192",
+            type: "image/svg+xml",
+          },
+        ],
+      },
+    ],
   };
 }
