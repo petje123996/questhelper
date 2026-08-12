@@ -7,6 +7,12 @@ import { C, frame, goldTitle, card, headBtn, bigBtn, ghostBtn } from "@/lib/them
 
 const FULL_SECONDS = 10 * 60; // the crab's HP bar drains from 100% to 0% over 10 minutes
 const WARN_AT = 60; // send a "get ready" notification with 1 minute left
+const LIVE_TAG = "gem-crab-timer";
+const LIVE_UPDATE_EVERY = 5; // seconds between live-notification refreshes, to avoid spamming updates
+
+// `renotify`/`silent` are part of the Notification Options spec but missing
+// from this project's TS DOM lib version.
+type NotifyOptions = NotificationOptions & { renotify?: boolean; silent?: boolean };
 
 function fmt(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60);
@@ -51,7 +57,9 @@ async function notify(
   if (Notification.permission !== "granted") {
     return `Permission is "${Notification.permission}", not granted.`;
   }
-  const options: NotificationOptions = { body, tag: "gem-crab-timer" };
+  // renotify: true so this re-alerts (sound/vibrate) even though it shares
+  // a tag with the silently-updating live countdown notification below.
+  const options: NotifyOptions = { body, tag: LIVE_TAG, renotify: true };
   if (registration) {
     try {
       await registration.showNotification(title, options);
@@ -69,6 +77,34 @@ async function notify(
   }
 }
 
+// Keeps a single notification around that ticks down in the background —
+// updates silently (no buzz/sound) so it doesn't feel like spam, sharing a
+// tag with notify() above so a real alert (1-minute warning, done) replaces
+// it and *does* re-alert, via `renotify: true` there.
+async function updateLiveNotification(
+  body: string,
+  registration: ServiceWorkerRegistration | null
+): Promise<void> {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted" || !registration) return;
+  const options: NotifyOptions = { body, tag: LIVE_TAG, silent: true, renotify: false };
+  try {
+    await registration.showNotification("🦀 Gem Crab Timer", options);
+  } catch {
+    /* best effort — the beep and tab title still work */
+  }
+}
+
+async function closeLiveNotification(registration: ServiceWorkerRegistration | null): Promise<void> {
+  if (!registration) return;
+  try {
+    const existing = await registration.getNotifications({ tag: LIVE_TAG });
+    existing.forEach((n) => n.close());
+  } catch {
+    /* best effort */
+  }
+}
+
 export default function GemCrabTimerPage() {
   const [percentInput, setPercentInput] = useState("100");
   const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
@@ -81,6 +117,7 @@ export default function GemCrabTimerPage() {
   const warnedRef = useRef(false);
   const wakeLockRef = useRef<any>(null);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const lastLiveUpdateRef = useRef<number | null>(null);
 
   const releaseWakeLock = () => {
     wakeLockRef.current?.release?.().catch(() => {});
@@ -129,11 +166,21 @@ export default function GemCrabTimerPage() {
         playBeep();
         warnedRef.current = false;
         endTimeRef.current = null;
+        lastLiveUpdateRef.current = null;
         setPercentInput("100");
         setSecondsLeft(FULL_SECONDS);
         setRunning(false);
         releaseWakeLock();
         return;
+      }
+
+      // Refresh the persistent countdown notification every few seconds
+      // (not every tick) so you can glance at the notification shade/lock
+      // screen and see roughly how much time is left without opening the tab.
+      if (remaining % LIVE_UPDATE_EVERY === 0 && remaining !== lastLiveUpdateRef.current) {
+        lastLiveUpdateRef.current = remaining;
+        const percent = Math.max(0, Math.min(100, Math.round((remaining / FULL_SECONDS) * 100)));
+        updateLiveNotification(`${fmt(remaining)} left · ${percent}% HP`, registrationRef.current);
       }
 
       setSecondsLeft(remaining);
@@ -189,9 +236,12 @@ export default function GemCrabTimerPage() {
 
   const start = async () => {
     warnedRef.current = false;
+    lastLiveUpdateRef.current = null;
     endTimeRef.current = Date.now() + secondsLeft * 1000;
     setRunning(true);
     if (permission === "default") await requestPermission();
+    const percent = Math.max(0, Math.min(100, Math.round((secondsLeft / FULL_SECONDS) * 100)));
+    updateLiveNotification(`${fmt(secondsLeft)} left · ${percent}% HP`, registrationRef.current);
     try {
       wakeLockRef.current = await (navigator as any).wakeLock?.request?.("screen");
     } catch {
@@ -202,15 +252,18 @@ export default function GemCrabTimerPage() {
   const pause = () => {
     setRunning(false);
     releaseWakeLock();
+    closeLiveNotification(registrationRef.current);
   };
 
   const reset = () => {
     setRunning(false);
     warnedRef.current = false;
     endTimeRef.current = null;
+    lastLiveUpdateRef.current = null;
     setPercentInput("100");
     setSecondsLeft(FULL_SECONDS);
     releaseWakeLock();
+    closeLiveNotification(registrationRef.current);
   };
 
   // Jumps the countdown straight to match the crab's HP% (handy when
@@ -229,6 +282,8 @@ export default function GemCrabTimerPage() {
     setSecondsLeft(newSeconds);
     if (running) {
       endTimeRef.current = Date.now() + newSeconds * 1000;
+      lastLiveUpdateRef.current = newSeconds;
+      updateLiveNotification(`${fmt(newSeconds)} left · ${clampedPercent}% HP`, registrationRef.current);
     }
   };
 
@@ -298,7 +353,8 @@ export default function GemCrabTimerPage() {
         </div>
 
         <div style={{ fontSize: 12, color: C.textDim, textAlign: "center" }}>
-          Pauses and resets to 10:00 when it hits 0 · notifies you before time's up
+          Pauses and resets to 10:00 when it hits 0 · keeps a live countdown in your notification
+          shade, no need to keep this tab open on screen
         </div>
 
         <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
