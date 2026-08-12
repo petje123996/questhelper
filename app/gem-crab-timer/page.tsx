@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Nav from "@/components/Nav";
-import { C, frame, goldTitle, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
+import { C, frame, goldTitle, card, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
 
-const DURATION = 10 * 60; // gem crab respawns every 10 minutes
+const FULL_SECONDS = 10 * 60; // the crab's HP bar drains from 100% to 0% over 10 minutes
 const WARN_AT = 60; // send a "get ready" notification with 1 minute left
 
 function fmt(totalSeconds: number): string {
@@ -45,7 +45,8 @@ function notify(title: string, body: string) {
 }
 
 export default function GemCrabTimerPage() {
-  const [secondsLeft, setSecondsLeft] = useState(DURATION);
+  const [percentInput, setPercentInput] = useState("100");
+  const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
   const [running, setRunning] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("default");
   const endTimeRef = useRef<number | null>(null);
@@ -69,16 +70,17 @@ export default function GemCrabTimerPage() {
 
       if (remaining <= WARN_AT && !warnedRef.current && remaining > 0) {
         warnedRef.current = true;
-        notify("Gem crab bijna terug", "Nog 1 minuut — hou je klaar om door te klikken.");
+        notify("Gem crab almost back", "One minute left — get ready to click through.");
         playBeep();
       }
 
       if (remaining <= 0) {
-        notify("Gem crab timer klaar!", "Tijd om door te klikken.");
+        notify("Gem crab timer done!", "Time to click through.");
         playBeep();
         warnedRef.current = false;
-        endTimeRef.current = Date.now() + DURATION * 1000;
-        setSecondsLeft(DURATION);
+        endTimeRef.current = Date.now() + FULL_SECONDS * 1000;
+        setPercentInput("100");
+        setSecondsLeft(FULL_SECONDS);
         return;
       }
 
@@ -129,9 +131,29 @@ export default function GemCrabTimerPage() {
     setRunning(false);
     warnedRef.current = false;
     endTimeRef.current = null;
-    setSecondsLeft(DURATION);
+    setPercentInput("100");
+    setSecondsLeft(FULL_SECONDS);
     wakeLockRef.current?.release?.().catch(() => {});
     wakeLockRef.current = null;
+  };
+
+  // Jumps the countdown straight to match the crab's HP% (handy when
+  // joining late and reading it off-screen) without changing what Reset
+  // and the auto-loop fall back to — a new crab always spawns at 100%.
+  const applyPercent = () => {
+    const parsed = parseFloat(percentInput.replace(",", "."));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setPercentInput("100");
+      return;
+    }
+    const clampedPercent = Math.min(100, Math.max(1, parsed));
+    const newSeconds = Math.round((FULL_SECONDS * clampedPercent) / 100);
+    setPercentInput(String(clampedPercent));
+    warnedRef.current = false;
+    setSecondsLeft(newSeconds);
+    if (running) {
+      endTimeRef.current = Date.now() + newSeconds * 1000;
+    }
   };
 
   const critical = secondsLeft <= WARN_AT;
@@ -174,13 +196,13 @@ export default function GemCrabTimerPage() {
         </div>
 
         <div style={{ fontSize: 12, color: C.textDim, textAlign: "center" }}>
-          Herstart elke 10 minuten · meldt zich 1 minuut van tevoren
+          Loops automatically when it hits 0 · notifies you before time's up
         </div>
 
         <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
           {running ? (
             <button onClick={pause} style={{ ...bigBtn, cursor: "pointer" }}>
-              ⏸ Pauzeer
+              ⏸ Pause
             </button>
           ) : (
             <button onClick={start} style={{ ...bigBtn, cursor: "pointer" }}>
@@ -188,25 +210,68 @@ export default function GemCrabTimerPage() {
             </button>
           )}
           <button onClick={reset} style={{ ...ghostBtn, cursor: "pointer" }}>
-            ↺ Reset naar 10:00
+            ↺ Reset to 10:00
           </button>
+        </div>
+
+        <div style={{ ...card, width: "100%", padding: "10px 12px", boxSizing: "border-box" }}>
+          <label style={{ fontSize: 12, color: C.textDim, display: "block", marginBottom: 6 }}>
+            Crab HP% left — jump the timer to match when you join late
+          </label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              type="number"
+              inputMode="decimal"
+              step={1}
+              min={1}
+              max={100}
+              value={percentInput}
+              onChange={(e) => setPercentInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && applyPercent()}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                padding: "8px 10px",
+                fontSize: 14,
+                background: C.panelSoft,
+                border: `1px solid ${C.borderSoft}`,
+                borderRadius: 8,
+                color: C.text,
+                boxSizing: "border-box",
+              }}
+            />
+            <span style={{ alignSelf: "center", color: C.textDim, fontSize: 14 }}>%</span>
+            <button
+              onClick={applyPercent}
+              style={{ ...ghostBtn, width: "auto", padding: "8px 14px", fontSize: 13, cursor: "pointer" }}
+            >
+              Set
+            </button>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
+          The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
+          (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
+          9:12. Reset and the auto-loop after 0:00 always go back to a fresh 10:00, since a new crab
+          always spawns at full HP.
         </div>
 
         {permission !== "granted" && permission !== "unsupported" && (
           <button onClick={requestPermission} style={{ ...ghostBtn, cursor: "pointer", fontSize: 12 }}>
-            🔔 Meldingen inschakelen
+            🔔 Enable notifications
           </button>
         )}
         {permission === "unsupported" && (
           <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
-            Meldingen worden niet ondersteund in deze browser — laat dit tabblad open voor de piep en de
-            timer in de titelbalk.
+            Notifications aren't supported in this browser — keep this tab open for the beep and the
+            tab-title countdown.
           </div>
         )}
         {permission === "denied" && (
           <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
-            Meldingen staan uit voor deze site. Zet ze aan via je browserinstellingen om een pop-up te
-            krijgen vlak voordat de timer afloopt.
+            Notifications are turned off for this site. Enable them in your browser settings to get a
+            pop-up right before the timer runs out.
           </div>
         )}
       </div>
