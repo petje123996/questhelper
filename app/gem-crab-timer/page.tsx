@@ -233,6 +233,7 @@ export default function GemCrabTimerPage() {
   };
 
   const critical = secondsLeft <= WARN_AT;
+  const percentLeft = Math.max(0, Math.min(100, Math.round((secondsLeft / FULL_SECONDS) * 100)));
 
   return (
     <div style={frame}>
@@ -259,16 +260,41 @@ export default function GemCrabTimerPage() {
       >
         <div
           style={{
-            fontFamily: "Georgia, 'Times New Roman', serif",
-            fontSize: "clamp(48px, 22vw, 84px)",
-            fontWeight: 700,
-            lineHeight: 1,
-            color: critical ? C.red : C.gold,
-            fontVariantNumeric: "tabular-nums",
-            transition: "color .2s",
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "center",
+            gap: 10,
+            flexWrap: "wrap",
           }}
         >
-          {fmt(secondsLeft)}
+          <div
+            style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: "clamp(48px, 22vw, 84px)",
+              fontWeight: 700,
+              lineHeight: 1,
+              color: critical ? C.red : C.gold,
+              fontVariantNumeric: "tabular-nums",
+              transition: "color .2s",
+            }}
+          >
+            {fmt(secondsLeft)}
+          </div>
+          <div
+            style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: "clamp(22px, 9vw, 36px)",
+              fontWeight: 700,
+              color: critical ? C.red : C.goldDim,
+              fontVariantNumeric: "tabular-nums",
+              transition: "color .2s",
+            }}
+          >
+            {percentLeft}%
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", marginTop: -8 }}>
+          compare this % against the crab's HP bar to check for drift
         </div>
 
         <div style={{ fontSize: 12, color: C.textDim, textAlign: "center" }}>
