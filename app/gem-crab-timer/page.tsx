@@ -4,21 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
-import { loadStored, saveStored } from "@/lib/storage";
 
-const DEFAULT_MINUTES = 10; // gem crab's HP bar drains from 100% to 0% over 10 minutes
-const MIN_MINUTES = 0.5;
-const MAX_MINUTES = 30;
-const STORAGE_KEY = "qh-gem-crab-timer-minutes";
+const FULL_SECONDS = 10 * 60; // the crab's HP bar drains from 100% to 0% over 10 minutes
+const WARN_AT = 60; // send a "get ready" notification with 1 minute left
 
 function fmt(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function clampMinutes(n: number): number {
-  return Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, n));
 }
 
 function playBeep() {
@@ -52,15 +45,13 @@ function notify(title: string, body: string) {
 }
 
 export default function GemCrabTimerPage() {
-  const [baseMinutes, setBaseMinutes] = useState(DEFAULT_MINUTES);
-  const [durationInput, setDurationInput] = useState(String(DEFAULT_MINUTES));
-  const [secondsLeft, setSecondsLeft] = useState(DEFAULT_MINUTES * 60);
+  const [percentInput, setPercentInput] = useState("100");
+  const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
   const [running, setRunning] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("default");
   const endTimeRef = useRef<number | null>(null);
   const warnedRef = useRef(false);
   const wakeLockRef = useRef<any>(null);
-  const baseSecondsRef = useRef(DEFAULT_MINUTES * 60);
 
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
@@ -68,18 +59,7 @@ export default function GemCrabTimerPage() {
     } else {
       setPermission(Notification.permission);
     }
-    const saved = loadStored(STORAGE_KEY);
-    if (typeof saved === "number" && Number.isFinite(saved) && saved > 0) {
-      const clamped = clampMinutes(saved);
-      setBaseMinutes(clamped);
-      setDurationInput(String(clamped));
-      setSecondsLeft(Math.round(clamped * 60));
-    }
   }, []);
-
-  useEffect(() => {
-    baseSecondsRef.current = Math.round(baseMinutes * 60);
-  }, [baseMinutes]);
 
   useEffect(() => {
     if (!running) return;
@@ -87,9 +67,8 @@ export default function GemCrabTimerPage() {
       const end = endTimeRef.current;
       if (end === null) return;
       const remaining = Math.max(0, Math.round((end - Date.now()) / 1000));
-      const warnAt = Math.min(60, Math.max(1, Math.floor(baseSecondsRef.current / 2)));
 
-      if (remaining <= warnAt && !warnedRef.current && remaining > 0) {
+      if (remaining <= WARN_AT && !warnedRef.current && remaining > 0) {
         warnedRef.current = true;
         notify("Gem crab almost back", "One minute left — get ready to click through.");
         playBeep();
@@ -99,8 +78,9 @@ export default function GemCrabTimerPage() {
         notify("Gem crab timer done!", "Time to click through.");
         playBeep();
         warnedRef.current = false;
-        endTimeRef.current = Date.now() + baseSecondsRef.current * 1000;
-        setSecondsLeft(baseSecondsRef.current);
+        endTimeRef.current = Date.now() + FULL_SECONDS * 1000;
+        setPercentInput("100");
+        setSecondsLeft(FULL_SECONDS);
         return;
       }
 
@@ -151,35 +131,32 @@ export default function GemCrabTimerPage() {
     setRunning(false);
     warnedRef.current = false;
     endTimeRef.current = null;
-    setSecondsLeft(baseSecondsRef.current);
+    setPercentInput("100");
+    setSecondsLeft(FULL_SECONDS);
     wakeLockRef.current?.release?.().catch(() => {});
     wakeLockRef.current = null;
   };
 
-  // Applies the typed duration right away: corrects the current countdown
-  // (handy when you're joining late and reading the crab's HP% off-screen)
-  // and becomes the new default that Reset and auto-loop use going forward.
-  const applyDuration = () => {
-    const parsed = parseFloat(durationInput.replace(",", "."));
+  // Jumps the countdown straight to match the crab's HP% (handy when
+  // joining late and reading it off-screen) without changing what Reset
+  // and the auto-loop fall back to — a new crab always spawns at 100%.
+  const applyPercent = () => {
+    const parsed = parseFloat(percentInput.replace(",", "."));
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      setDurationInput(String(baseMinutes));
+      setPercentInput("100");
       return;
     }
-    const clamped = clampMinutes(parsed);
-    const clampedSeconds = Math.round(clamped * 60);
-    setBaseMinutes(clamped);
-    setDurationInput(String(clamped));
-    saveStored(STORAGE_KEY, clamped);
+    const clampedPercent = Math.min(100, Math.max(1, parsed));
+    const newSeconds = Math.round((FULL_SECONDS * clampedPercent) / 100);
+    setPercentInput(String(clampedPercent));
     warnedRef.current = false;
-    setSecondsLeft(clampedSeconds);
+    setSecondsLeft(newSeconds);
     if (running) {
-      endTimeRef.current = Date.now() + clampedSeconds * 1000;
+      endTimeRef.current = Date.now() + newSeconds * 1000;
     }
   };
 
-  const baseSeconds = Math.round(baseMinutes * 60);
-  const warnAtDisplay = Math.min(60, Math.max(1, Math.floor(baseSeconds / 2)));
-  const critical = secondsLeft <= warnAtDisplay;
+  const critical = secondsLeft <= WARN_AT;
 
   return (
     <div style={frame}>
@@ -233,24 +210,24 @@ export default function GemCrabTimerPage() {
             </button>
           )}
           <button onClick={reset} style={{ ...ghostBtn, cursor: "pointer" }}>
-            ↺ Reset to {fmt(baseSeconds)}
+            ↺ Reset to 10:00
           </button>
         </div>
 
         <div style={{ ...card, width: "100%", padding: "10px 12px", boxSizing: "border-box" }}>
           <label style={{ fontSize: 12, color: C.textDim, display: "block", marginBottom: 6 }}>
-            Timer length (minutes) — adjust this if you're joining late
+            Crab HP% left — jump the timer to match when you join late
           </label>
           <div style={{ display: "flex", gap: 6 }}>
             <input
               type="number"
               inputMode="decimal"
-              step={0.1}
-              min={MIN_MINUTES}
-              max={MAX_MINUTES}
-              value={durationInput}
-              onChange={(e) => setDurationInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && applyDuration()}
+              step={1}
+              min={1}
+              max={100}
+              value={percentInput}
+              onChange={(e) => setPercentInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && applyPercent()}
               style={{
                 flex: 1,
                 minWidth: 0,
@@ -263,8 +240,9 @@ export default function GemCrabTimerPage() {
                 boxSizing: "border-box",
               }}
             />
+            <span style={{ alignSelf: "center", color: C.textDim, fontSize: 14 }}>%</span>
             <button
-              onClick={applyDuration}
+              onClick={applyPercent}
               style={{ ...ghostBtn, width: "auto", padding: "8px 14px", fontSize: 13, cursor: "pointer" }}
             >
               Set
@@ -274,9 +252,9 @@ export default function GemCrabTimerPage() {
 
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
           The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
-          (0.1 minutes). So if you join when it's already at, say, 92% HP, set the timer to 9.2 minutes
-          (92 × 0.1) instead of the full 10. You can also just type a plain number, like 6, for a shorter
-          custom timer.
+          (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
+          9:12. Reset and the auto-loop after 0:00 always go back to a fresh 10:00, since a new crab
+          always spawns at full HP.
         </div>
 
         {permission !== "granted" && permission !== "unsupported" && (
