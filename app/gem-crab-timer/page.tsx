@@ -456,10 +456,11 @@ export default function GemCrabTimerPage() {
           </div>
         )}
         <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", lineHeight: 1.5 }}>
-          Heads up: if your phone puts the browser fully to sleep in the background (e.g. while you're
-          scrolling another app), the alert can still arrive late or get missed — that's an OS/browser
-          limit no website can fully get around. Keeping the tab open and screen on, like you're doing
-          now, is the most reliable way to catch it on time.
+          Heads up: if your phone puts this fully to sleep in the background (e.g. while you're scrolling
+          another app), the countdown notification can stop updating or the alert can arrive late — that's
+          an OS/browser limit no website can fully get around. If you installed this to your home screen,
+          Android treats it as its own separate app for battery optimization, so exempting Chrome isn't
+          enough — check Settings → Apps → (this app's name) → Battery, and set it to unrestricted too.
         </div>
       </div>
     </div>
