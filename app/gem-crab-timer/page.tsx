@@ -64,10 +64,16 @@ export default function GemCrabTimerPage() {
   const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
   const [running, setRunning] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("default");
+  const [swStatus, setSwStatus] = useState<"pending" | "ready" | "unavailable">("pending");
   const endTimeRef = useRef<number | null>(null);
   const warnedRef = useRef(false);
   const wakeLockRef = useRef<any>(null);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+
+  const releaseWakeLock = () => {
+    wakeLockRef.current?.release?.().catch(() => {});
+    wakeLockRef.current = null;
+  };
 
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
@@ -76,20 +82,26 @@ export default function GemCrabTimerPage() {
       setPermission(Notification.permission);
     }
     if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register("/sw.js")
+      navigator.serviceWorker.register("/sw.js").catch(() => setSwStatus("unavailable"));
+      // .ready only resolves once a worker is actually installed, activated,
+      // and (thanks to clients.claim() in sw.js) controlling this page —
+      // showNotification() can silently fail before that point, which is
+      // why we don't use the registration returned by register() directly.
+      navigator.serviceWorker.ready
         .then((reg) => {
           registrationRef.current = reg;
+          setSwStatus("ready");
         })
-        .catch(() => {
-          /* notifications will fall back to the plain constructor */
-        });
+        .catch(() => setSwStatus("unavailable"));
+    } else {
+      setSwStatus("unavailable");
     }
   }, []);
 
   useEffect(() => {
     if (!running) return;
-    const id = setInterval(() => {
+
+    const tick = () => {
       const end = endTimeRef.current;
       if (end === null) return;
       const remaining = Math.max(0, Math.round((end - Date.now()) / 1000));
@@ -101,18 +113,33 @@ export default function GemCrabTimerPage() {
       }
 
       if (remaining <= 0) {
-        notify("Gem crab timer done!", "Time to click through.", registrationRef.current);
+        notify("Gem crab timer done!", "Time to click through — paused, ready for the next crab.", registrationRef.current);
         playBeep();
         warnedRef.current = false;
-        endTimeRef.current = Date.now() + FULL_SECONDS * 1000;
+        endTimeRef.current = null;
         setPercentInput("100");
         setSecondsLeft(FULL_SECONDS);
+        setRunning(false);
+        releaseWakeLock();
         return;
       }
 
       setSecondsLeft(remaining);
-    }, 250);
-    return () => clearInterval(id);
+    };
+
+    const id = setInterval(tick, 250);
+    // Background tabs (e.g. while scrolling another app) can have their
+    // timers throttled or fully paused by the OS/browser, so a warning can
+    // arrive late. Re-check immediately when the tab regains visibility
+    // instead of waiting for the next throttled tick.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [running]);
 
   useEffect(() => {
@@ -149,8 +176,7 @@ export default function GemCrabTimerPage() {
 
   const pause = () => {
     setRunning(false);
-    wakeLockRef.current?.release?.().catch(() => {});
-    wakeLockRef.current = null;
+    releaseWakeLock();
   };
 
   const reset = () => {
@@ -159,8 +185,7 @@ export default function GemCrabTimerPage() {
     endTimeRef.current = null;
     setPercentInput("100");
     setSecondsLeft(FULL_SECONDS);
-    wakeLockRef.current?.release?.().catch(() => {});
-    wakeLockRef.current = null;
+    releaseWakeLock();
   };
 
   // Jumps the countdown straight to match the crab's HP% (handy when
@@ -222,7 +247,7 @@ export default function GemCrabTimerPage() {
         </div>
 
         <div style={{ fontSize: 12, color: C.textDim, textAlign: "center" }}>
-          Loops automatically when it hits 0 · notifies you before time's up
+          Pauses and resets to 10:00 when it hits 0 · notifies you before time's up
         </div>
 
         <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -279,14 +304,23 @@ export default function GemCrabTimerPage() {
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
           The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
           (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
-          9:12. Reset and the auto-loop after 0:00 always go back to a fresh 10:00, since a new crab
-          always spawns at full HP.
+          9:12. Reset and hitting 0:00 both bring it back to a fresh 10:00, paused — press Start again
+          once you're at the next crab, since a new crab always spawns at full HP.
         </div>
 
         {permission !== "granted" && permission !== "unsupported" && (
           <button onClick={requestPermission} style={{ ...ghostBtn, cursor: "pointer", fontSize: 12 }}>
             🔔 Enable notifications
           </button>
+        )}
+        {permission === "granted" && (
+          <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
+            {swStatus === "ready"
+              ? "🔔 Notifications ready"
+              : swStatus === "pending"
+                ? "⏳ Setting up notifications…"
+                : "⚠️ Notifications may not fire on this browser — the beep and tab title still will"}
+          </div>
         )}
         {permission === "unsupported" && (
           <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
@@ -300,6 +334,12 @@ export default function GemCrabTimerPage() {
             pop-up right before the timer runs out.
           </div>
         )}
+        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", lineHeight: 1.5 }}>
+          Heads up: if your phone puts the browser fully to sleep in the background (e.g. while you're
+          scrolling another app), the alert can still arrive late or get missed — that's an OS/browser
+          limit no website can fully get around. Keeping the tab open and screen on, like you're doing
+          now, is the most reliable way to catch it on time.
+        </div>
       </div>
     </div>
   );
