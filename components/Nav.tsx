@@ -18,6 +18,7 @@ const LINKS: { href: string; label: string; icon: string }[] = [
   { href: "/diaries", label: "Achievement Diaries", icon: "📔" },
   { href: "/combat-achievements", label: "Combat Achievements", icon: "🗡️" },
   { href: "/clues", label: "Clue Solver", icon: "🧩" },
+  { href: "/gem-crab-timer", label: "Gem Crab Timer", icon: "🦀" },
   { href: "/profile", label: "Profile", icon: "👤" },
 ];
 
