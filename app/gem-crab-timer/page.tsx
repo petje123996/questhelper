@@ -34,13 +34,28 @@ function playBeep() {
   }
 }
 
-function notify(title: string, body: string) {
+// Android Chrome (and most other mobile browsers) refuse `new Notification()`
+// from a page context — it throws "Illegal constructor" and silently does
+// nothing under our try/catch. They require going through a registered
+// service worker's showNotification() instead, which also works fine on
+// desktop, so we always prefer it and only fall back to the plain
+// constructor if no registration is available.
+async function notify(title: string, body: string, registration: ServiceWorkerRegistration | null) {
   if (typeof window === "undefined" || !("Notification" in window)) return;
   if (Notification.permission !== "granted") return;
+  const options: NotificationOptions = { body, tag: "gem-crab-timer" };
+  if (registration) {
+    try {
+      await registration.showNotification(title, options);
+      return;
+    } catch {
+      /* fall through to the direct constructor */
+    }
+  }
   try {
-    new Notification(title, { body, tag: "gem-crab-timer" });
+    new Notification(title, options);
   } catch {
-    /* notification unavailable */
+    /* notification unavailable on this browser */
   }
 }
 
@@ -52,12 +67,23 @@ export default function GemCrabTimerPage() {
   const endTimeRef = useRef<number | null>(null);
   const warnedRef = useRef(false);
   const wakeLockRef = useRef<any>(null);
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
       setPermission("unsupported");
     } else {
       setPermission(Notification.permission);
+    }
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .then((reg) => {
+          registrationRef.current = reg;
+        })
+        .catch(() => {
+          /* notifications will fall back to the plain constructor */
+        });
     }
   }, []);
 
@@ -70,12 +96,12 @@ export default function GemCrabTimerPage() {
 
       if (remaining <= WARN_AT && !warnedRef.current && remaining > 0) {
         warnedRef.current = true;
-        notify("Gem crab almost back", "One minute left — get ready to click through.");
+        notify("Gem crab almost back", "One minute left — get ready to click through.", registrationRef.current);
         playBeep();
       }
 
       if (remaining <= 0) {
-        notify("Gem crab timer done!", "Time to click through.");
+        notify("Gem crab timer done!", "Time to click through.", registrationRef.current);
         playBeep();
         warnedRef.current = false;
         endTimeRef.current = Date.now() + FULL_SECONDS * 1000;
