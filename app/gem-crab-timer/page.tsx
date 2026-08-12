@@ -6,13 +6,22 @@ import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, dashed, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
 
 const FULL_SECONDS = 10 * 60; // the crab's HP bar drains from 100% to 0% over 10 minutes
-const WARN_AT = 60; // send a "get ready" notification with 1 minute left
 const LIVE_TAG = "gem-crab-timer";
-const LIVE_UPDATE_EVERY = 5; // seconds between live-notification refreshes, to avoid spamming updates
+// Seconds-left checkpoints that each fire their own alert, most urgent last.
+// A silently-updating live countdown notification isn't reliable — Android
+// seems to just not repaint "silent" updates promptly — so this uses only
+// one-off alerts instead, which fire correctly even when backgrounded.
+const WARN_THRESHOLDS = [300, 120, 60] as const;
 
-// `renotify`/`silent` are part of the Notification Options spec but missing
-// from this project's TS DOM lib version.
-type NotifyOptions = NotificationOptions & { renotify?: boolean; silent?: boolean };
+function thresholdLabel(seconds: number): string {
+  if (seconds < 60) return `${seconds} seconds`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+// `renotify` is part of the Notification Options spec but missing from this
+// project's TS DOM lib version.
+type NotifyOptions = NotificationOptions & { renotify?: boolean };
 
 function fmt(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60);
@@ -57,8 +66,8 @@ async function notify(
   if (Notification.permission !== "granted") {
     return `Permission is "${Notification.permission}", not granted.`;
   }
-  // renotify: true so this re-alerts (sound/vibrate) even though it shares
-  // a tag with the silently-updating live countdown notification below.
+  // renotify: true so each checkpoint re-alerts (sound/vibrate) even though
+  // they share a tag and replace one another.
   const options: NotifyOptions = { body, tag: LIVE_TAG, renotify: true };
   if (registration) {
     try {
@@ -77,34 +86,6 @@ async function notify(
   }
 }
 
-// Keeps a single notification around that ticks down in the background —
-// updates silently (no buzz/sound) so it doesn't feel like spam, sharing a
-// tag with notify() above so a real alert (1-minute warning, done) replaces
-// it and *does* re-alert, via `renotify: true` there.
-async function updateLiveNotification(
-  body: string,
-  registration: ServiceWorkerRegistration | null
-): Promise<void> {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted" || !registration) return;
-  const options: NotifyOptions = { body, tag: LIVE_TAG, silent: true, renotify: false };
-  try {
-    await registration.showNotification("🦀 Gem Crab Timer", options);
-  } catch {
-    /* best effort — the beep and tab title still work */
-  }
-}
-
-async function closeLiveNotification(registration: ServiceWorkerRegistration | null): Promise<void> {
-  if (!registration) return;
-  try {
-    const existing = await registration.getNotifications({ tag: LIVE_TAG });
-    existing.forEach((n) => n.close());
-  } catch {
-    /* best effort */
-  }
-}
-
 export default function GemCrabTimerPage() {
   const [percentInput, setPercentInput] = useState("100");
   const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
@@ -114,10 +95,9 @@ export default function GemCrabTimerPage() {
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const endTimeRef = useRef<number | null>(null);
-  const warnedRef = useRef(false);
+  const warnedThresholdsRef = useRef<Set<number>>(new Set());
   const wakeLockRef = useRef<any>(null);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
-  const lastLiveUpdateRef = useRef<number | null>(null);
 
   const releaseWakeLock = () => {
     wakeLockRef.current?.release?.().catch(() => {});
@@ -155,32 +135,33 @@ export default function GemCrabTimerPage() {
       if (end === null) return;
       const remaining = Math.max(0, Math.round((end - Date.now()) / 1000));
 
-      if (remaining <= WARN_AT && !warnedRef.current && remaining > 0) {
-        warnedRef.current = true;
-        notify("Gem crab almost back", "One minute left — get ready to click through.", registrationRef.current);
+      // Fire every checkpoint newly crossed since the last check. If several
+      // were crossed at once (e.g. the tab was backgrounded for a while),
+      // only alert for the most urgent one — the others are stale by now.
+      const newlyCrossed = WARN_THRESHOLDS.filter(
+        (t) => remaining <= t && remaining > 0 && !warnedThresholdsRef.current.has(t)
+      );
+      if (newlyCrossed.length > 0) {
+        newlyCrossed.forEach((t) => warnedThresholdsRef.current.add(t));
+        const mostUrgent = Math.min(...newlyCrossed);
+        notify(
+          "Gem crab timer",
+          `${thresholdLabel(mostUrgent)} left — get ready to click through.`,
+          registrationRef.current
+        );
         playBeep();
       }
 
       if (remaining <= 0) {
         notify("Gem crab timer done!", "Time to click through — paused, ready for the next crab.", registrationRef.current);
         playBeep();
-        warnedRef.current = false;
+        warnedThresholdsRef.current.clear();
         endTimeRef.current = null;
-        lastLiveUpdateRef.current = null;
         setPercentInput("100");
         setSecondsLeft(FULL_SECONDS);
         setRunning(false);
         releaseWakeLock();
         return;
-      }
-
-      // Refresh the persistent countdown notification every few seconds
-      // (not every tick) so you can glance at the notification shade/lock
-      // screen and see roughly how much time is left without opening the tab.
-      if (remaining % LIVE_UPDATE_EVERY === 0 && remaining !== lastLiveUpdateRef.current) {
-        lastLiveUpdateRef.current = remaining;
-        const percent = Math.max(0, Math.min(100, Math.round((remaining / FULL_SECONDS) * 100)));
-        updateLiveNotification(`${fmt(remaining)} left · ${percent}% HP`, registrationRef.current);
       }
 
       setSecondsLeft(remaining);
@@ -235,13 +216,10 @@ export default function GemCrabTimerPage() {
   };
 
   const start = async () => {
-    warnedRef.current = false;
-    lastLiveUpdateRef.current = null;
+    warnedThresholdsRef.current.clear();
     endTimeRef.current = Date.now() + secondsLeft * 1000;
     setRunning(true);
     if (permission === "default") await requestPermission();
-    const percent = Math.max(0, Math.min(100, Math.round((secondsLeft / FULL_SECONDS) * 100)));
-    updateLiveNotification(`${fmt(secondsLeft)} left · ${percent}% HP`, registrationRef.current);
     try {
       wakeLockRef.current = await (navigator as any).wakeLock?.request?.("screen");
     } catch {
@@ -252,18 +230,15 @@ export default function GemCrabTimerPage() {
   const pause = () => {
     setRunning(false);
     releaseWakeLock();
-    closeLiveNotification(registrationRef.current);
   };
 
   const reset = () => {
     setRunning(false);
-    warnedRef.current = false;
+    warnedThresholdsRef.current.clear();
     endTimeRef.current = null;
-    lastLiveUpdateRef.current = null;
     setPercentInput("100");
     setSecondsLeft(FULL_SECONDS);
     releaseWakeLock();
-    closeLiveNotification(registrationRef.current);
   };
 
   // Jumps the countdown straight to match the crab's HP% (handy when
@@ -278,16 +253,14 @@ export default function GemCrabTimerPage() {
     const clampedPercent = Math.min(100, Math.max(1, parsed));
     const newSeconds = Math.round((FULL_SECONDS * clampedPercent) / 100);
     setPercentInput(String(clampedPercent));
-    warnedRef.current = false;
+    warnedThresholdsRef.current.clear();
     setSecondsLeft(newSeconds);
     if (running) {
       endTimeRef.current = Date.now() + newSeconds * 1000;
-      lastLiveUpdateRef.current = newSeconds;
-      updateLiveNotification(`${fmt(newSeconds)} left · ${clampedPercent}% HP`, registrationRef.current);
     }
   };
 
-  const critical = secondsLeft <= WARN_AT;
+  const critical = secondsLeft <= Math.min(...WARN_THRESHOLDS);
   const percentLeft = Math.max(0, Math.min(100, Math.round((secondsLeft / FULL_SECONDS) * 100)));
 
   return (
@@ -447,8 +420,8 @@ export default function GemCrabTimerPage() {
           Compare the % above against the crab's HP bar to check for drift.
         </div>
         <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
-          Pauses and resets to 10:00 when it hits 0 · keeps a live countdown in your notification
-          shade, no need to keep this tab open on screen.
+          Sends a notification at 5, 2, and 1 minute(s) left, and when it hits 0, then pauses and resets
+          to 10:00.
         </div>
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
           The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
@@ -457,11 +430,11 @@ export default function GemCrabTimerPage() {
           once you're at the next crab, since a new crab always spawns at full HP.
         </div>
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
-          Heads up: if your phone puts this fully to sleep in the background (e.g. while you're scrolling
-          another app), the countdown notification can stop updating or the alert can arrive late — that's
-          an OS/browser limit no website can fully get around. If you installed this to your home screen,
-          Android treats it as its own separate app for battery optimization, so exempting Chrome isn't
-          enough — check Settings → Apps → (this app's name) → Battery, and set it to unrestricted too.
+          Heads up: these are one-off alerts rather than a live-updating display, because that turned out
+          to be the reliable part — a notification that keeps refreshing its own text seems to freeze on
+          some phones once the app is in the background, even with battery restrictions turned off for
+          it. The on-screen countdown itself can still lag behind reality after a long time backgrounded;
+          reopening the tab corrects it immediately.
         </div>
       </div>
     </div>
