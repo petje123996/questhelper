@@ -34,13 +34,38 @@ function playBeep() {
   }
 }
 
-function notify(title: string, body: string) {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
+// Android Chrome (and most other mobile browsers) refuse `new Notification()`
+// from a page context — it throws "Illegal constructor" and silently does
+// nothing under our try/catch. They require going through a registered
+// service worker's showNotification() instead, which also works fine on
+// desktop, so we always prefer it and only fall back to the plain
+// constructor if no registration is available.
+async function notify(
+  title: string,
+  body: string,
+  registration: ServiceWorkerRegistration | null
+): Promise<string> {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return "Notifications aren't supported in this browser.";
+  }
+  if (Notification.permission !== "granted") {
+    return `Permission is "${Notification.permission}", not granted.`;
+  }
+  const options: NotificationOptions = { body, tag: "gem-crab-timer" };
+  if (registration) {
+    try {
+      await registration.showNotification(title, options);
+      return "Sent via the service worker. If nothing appeared on screen, check Android's notification settings for Chrome (and this site's notification permission in Chrome's site settings).";
+    } catch (err) {
+      /* fall through to the direct constructor */
+    }
+  }
   try {
-    new Notification(title, { body, tag: "gem-crab-timer" });
-  } catch {
-    /* notification unavailable */
+    new Notification(title, options);
+    return "Sent via the direct Notification() constructor.";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Failed to show a notification: ${message}`;
   }
 }
 
@@ -49,9 +74,18 @@ export default function GemCrabTimerPage() {
   const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
   const [running, setRunning] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("default");
+  const [swStatus, setSwStatus] = useState<"pending" | "ready" | "unavailable">("pending");
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
   const endTimeRef = useRef<number | null>(null);
   const warnedRef = useRef(false);
   const wakeLockRef = useRef<any>(null);
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+
+  const releaseWakeLock = () => {
+    wakeLockRef.current?.release?.().catch(() => {});
+    wakeLockRef.current = null;
+  };
 
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) {
@@ -59,34 +93,65 @@ export default function GemCrabTimerPage() {
     } else {
       setPermission(Notification.permission);
     }
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => setSwStatus("unavailable"));
+      // .ready only resolves once a worker is actually installed, activated,
+      // and (thanks to clients.claim() in sw.js) controlling this page —
+      // showNotification() can silently fail before that point, which is
+      // why we don't use the registration returned by register() directly.
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          registrationRef.current = reg;
+          setSwStatus("ready");
+        })
+        .catch(() => setSwStatus("unavailable"));
+    } else {
+      setSwStatus("unavailable");
+    }
   }, []);
 
   useEffect(() => {
     if (!running) return;
-    const id = setInterval(() => {
+
+    const tick = () => {
       const end = endTimeRef.current;
       if (end === null) return;
       const remaining = Math.max(0, Math.round((end - Date.now()) / 1000));
 
       if (remaining <= WARN_AT && !warnedRef.current && remaining > 0) {
         warnedRef.current = true;
-        notify("Gem crab almost back", "One minute left — get ready to click through.");
+        notify("Gem crab almost back", "One minute left — get ready to click through.", registrationRef.current);
         playBeep();
       }
 
       if (remaining <= 0) {
-        notify("Gem crab timer done!", "Time to click through.");
+        notify("Gem crab timer done!", "Time to click through — paused, ready for the next crab.", registrationRef.current);
         playBeep();
         warnedRef.current = false;
-        endTimeRef.current = Date.now() + FULL_SECONDS * 1000;
+        endTimeRef.current = null;
         setPercentInput("100");
         setSecondsLeft(FULL_SECONDS);
+        setRunning(false);
+        releaseWakeLock();
         return;
       }
 
       setSecondsLeft(remaining);
-    }, 250);
-    return () => clearInterval(id);
+    };
+
+    const id = setInterval(tick, 250);
+    // Background tabs (e.g. while scrolling another app) can have their
+    // timers throttled or fully paused by the OS/browser, so a warning can
+    // arrive late. Re-check immediately when the tab regains visibility
+    // instead of waiting for the next throttled tick.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [running]);
 
   useEffect(() => {
@@ -109,6 +174,19 @@ export default function GemCrabTimerPage() {
     setPermission(result);
   };
 
+  const sendTestNotification = async () => {
+    setTesting(true);
+    setTestResult(null);
+    if (permission === "default") await requestPermission();
+    const result = await notify(
+      "Test notification",
+      "If this shows up as a real system notification, it works.",
+      registrationRef.current
+    );
+    setTestResult(result);
+    setTesting(false);
+  };
+
   const start = async () => {
     warnedRef.current = false;
     endTimeRef.current = Date.now() + secondsLeft * 1000;
@@ -123,8 +201,7 @@ export default function GemCrabTimerPage() {
 
   const pause = () => {
     setRunning(false);
-    wakeLockRef.current?.release?.().catch(() => {});
-    wakeLockRef.current = null;
+    releaseWakeLock();
   };
 
   const reset = () => {
@@ -133,8 +210,7 @@ export default function GemCrabTimerPage() {
     endTimeRef.current = null;
     setPercentInput("100");
     setSecondsLeft(FULL_SECONDS);
-    wakeLockRef.current?.release?.().catch(() => {});
-    wakeLockRef.current = null;
+    releaseWakeLock();
   };
 
   // Jumps the countdown straight to match the crab's HP% (handy when
@@ -157,6 +233,7 @@ export default function GemCrabTimerPage() {
   };
 
   const critical = secondsLeft <= WARN_AT;
+  const percentLeft = Math.max(0, Math.min(100, Math.round((secondsLeft / FULL_SECONDS) * 100)));
 
   return (
     <div style={frame}>
@@ -183,20 +260,45 @@ export default function GemCrabTimerPage() {
       >
         <div
           style={{
-            fontFamily: "Georgia, 'Times New Roman', serif",
-            fontSize: "clamp(48px, 22vw, 84px)",
-            fontWeight: 700,
-            lineHeight: 1,
-            color: critical ? C.red : C.gold,
-            fontVariantNumeric: "tabular-nums",
-            transition: "color .2s",
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "center",
+            gap: 10,
+            flexWrap: "wrap",
           }}
         >
-          {fmt(secondsLeft)}
+          <div
+            style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: "clamp(48px, 22vw, 84px)",
+              fontWeight: 700,
+              lineHeight: 1,
+              color: critical ? C.red : C.gold,
+              fontVariantNumeric: "tabular-nums",
+              transition: "color .2s",
+            }}
+          >
+            {fmt(secondsLeft)}
+          </div>
+          <div
+            style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontSize: "clamp(22px, 9vw, 36px)",
+              fontWeight: 700,
+              color: critical ? C.red : C.goldDim,
+              fontVariantNumeric: "tabular-nums",
+              transition: "color .2s",
+            }}
+          >
+            {percentLeft}%
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", marginTop: -8 }}>
+          compare this % against the crab's HP bar to check for drift
         </div>
 
         <div style={{ fontSize: 12, color: C.textDim, textAlign: "center" }}>
-          Loops automatically when it hits 0 · notifies you before time's up
+          Pauses and resets to 10:00 when it hits 0 · notifies you before time's up
         </div>
 
         <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -253,14 +355,37 @@ export default function GemCrabTimerPage() {
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
           The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
           (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
-          9:12. Reset and the auto-loop after 0:00 always go back to a fresh 10:00, since a new crab
-          always spawns at full HP.
+          9:12. Reset and hitting 0:00 both bring it back to a fresh 10:00, paused — press Start again
+          once you're at the next crab, since a new crab always spawns at full HP.
         </div>
 
         {permission !== "granted" && permission !== "unsupported" && (
           <button onClick={requestPermission} style={{ ...ghostBtn, cursor: "pointer", fontSize: 12 }}>
             🔔 Enable notifications
           </button>
+        )}
+        {permission === "granted" && (
+          <>
+            <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
+              {swStatus === "ready"
+                ? "🔔 Notifications ready"
+                : swStatus === "pending"
+                  ? "⏳ Setting up notifications…"
+                  : "⚠️ Notifications may not fire on this browser — the beep and tab title still will"}
+            </div>
+            <button
+              onClick={sendTestNotification}
+              disabled={testing}
+              style={{ ...ghostBtn, cursor: testing ? "default" : "pointer", fontSize: 12 }}
+            >
+              {testing ? "Sending…" : "🔔 Send test notification now"}
+            </button>
+            {testResult && (
+              <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", lineHeight: 1.5 }}>
+                {testResult}
+              </div>
+            )}
+          </>
         )}
         {permission === "unsupported" && (
           <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
@@ -274,6 +399,12 @@ export default function GemCrabTimerPage() {
             pop-up right before the timer runs out.
           </div>
         )}
+        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", lineHeight: 1.5 }}>
+          Heads up: if your phone puts the browser fully to sleep in the background (e.g. while you're
+          scrolling another app), the alert can still arrive late or get missed — that's an OS/browser
+          limit no website can fully get around. Keeping the tab open and screen on, like you're doing
+          now, is the most reliable way to catch it on time.
+        </div>
       </div>
     </div>
   );
