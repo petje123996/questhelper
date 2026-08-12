@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Nav from "@/components/Nav";
-import { C, frame, goldTitle, card, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
+import { C, frame, goldTitle, card, dashed, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
 
 const FULL_SECONDS = 10 * 60; // the crab's HP bar drains from 100% to 0% over 10 minutes
 const WARN_AT = 60; // send a "get ready" notification with 1 minute left
@@ -348,29 +348,6 @@ export default function GemCrabTimerPage() {
             {percentLeft}%
           </div>
         </div>
-        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", marginTop: -8 }}>
-          compare this % against the crab's HP bar to check for drift
-        </div>
-
-        <div style={{ fontSize: 12, color: C.textDim, textAlign: "center" }}>
-          Pauses and resets to 10:00 when it hits 0 · keeps a live countdown in your notification
-          shade, no need to keep this tab open on screen
-        </div>
-
-        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
-          {running ? (
-            <button onClick={pause} style={{ ...bigBtn, cursor: "pointer" }}>
-              ⏸ Pause
-            </button>
-          ) : (
-            <button onClick={start} style={{ ...bigBtn, cursor: "pointer" }}>
-              ▶ Start
-            </button>
-          )}
-          <button onClick={reset} style={{ ...ghostBtn, cursor: "pointer" }}>
-            ↺ Reset to 10:00
-          </button>
-        </div>
 
         <div style={{ ...card, width: "100%", padding: "10px 12px", boxSizing: "border-box" }}>
           <label style={{ fontSize: 12, color: C.textDim, display: "block", marginBottom: 6 }}>
@@ -408,11 +385,19 @@ export default function GemCrabTimerPage() {
           </div>
         </div>
 
-        <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
-          The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
-          (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
-          9:12. Reset and hitting 0:00 both bring it back to a fresh 10:00, paused — press Start again
-          once you're at the next crab, since a new crab always spawns at full HP.
+        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
+          {running ? (
+            <button onClick={pause} style={{ ...bigBtn, cursor: "pointer" }}>
+              ⏸ Pause
+            </button>
+          ) : (
+            <button onClick={start} style={{ ...bigBtn, cursor: "pointer" }}>
+              ▶ Start
+            </button>
+          )}
+          <button onClick={reset} style={{ ...ghostBtn, cursor: "pointer" }}>
+            ↺ Reset to 10:00
+          </button>
         </div>
 
         {permission !== "granted" && permission !== "unsupported" && (
@@ -455,7 +440,23 @@ export default function GemCrabTimerPage() {
             pop-up right before the timer runs out.
           </div>
         )}
-        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center", lineHeight: 1.5 }}>
+
+        <div style={{ ...dashed, width: "100%" }} />
+
+        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
+          Compare the % above against the crab's HP bar to check for drift.
+        </div>
+        <div style={{ fontSize: 11, color: C.textDim, textAlign: "center" }}>
+          Pauses and resets to 10:00 when it hits 0 · keeps a live countdown in your notification
+          shade, no need to keep this tab open on screen.
+        </div>
+        <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
+          The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
+          (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
+          9:12. Reset and hitting 0:00 both bring it back to a fresh 10:00, paused — press Start again
+          once you're at the next crab, since a new crab always spawns at full HP.
+        </div>
+        <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
           Heads up: if your phone puts this fully to sleep in the background (e.g. while you're scrolling
           another app), the countdown notification can stop updating or the alert can arrive late — that's
           an OS/browser limit no website can fully get around. If you installed this to your home screen,
