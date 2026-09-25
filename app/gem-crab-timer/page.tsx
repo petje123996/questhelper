@@ -5,7 +5,12 @@ import Link from "next/link";
 import Nav from "@/components/Nav";
 import { C, frame, goldTitle, card, dashed, headBtn, bigBtn, ghostBtn } from "@/lib/theme";
 
-const FULL_SECONDS = 10 * 60; // the crab's HP bar drains from 100% to 0% over 10 minutes
+const FULL_SECONDS = 10 * 60; // the 10-minute cycle
+// The crab's HP drops to 99% almost instantly (the first hit), then drains
+// to 0% over the full 10-minute cycle from there — 100% itself is never
+// really observed for any meaningful stretch, so Start/Reset default to 99%
+// instead of a theoretical 100%.
+const START_PERCENT = 99;
 const LIVE_TAG = "gem-crab-timer";
 // Seconds-left checkpoints that each fire their own alert, most urgent last.
 // A silently-updating live countdown notification isn't reliable — Android
@@ -87,7 +92,7 @@ async function notify(
 }
 
 export default function GemCrabTimerPage() {
-  const [percentInput, setPercentInput] = useState("100");
+  const [percentInput, setPercentInput] = useState(String(START_PERCENT));
   const [secondsLeft, setSecondsLeft] = useState(FULL_SECONDS);
   const [running, setRunning] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("default");
@@ -157,7 +162,7 @@ export default function GemCrabTimerPage() {
         playBeep();
         warnedThresholdsRef.current.clear();
         endTimeRef.current = null;
-        setPercentInput("100");
+        setPercentInput(String(START_PERCENT));
         setSecondsLeft(FULL_SECONDS);
         setRunning(false);
         releaseWakeLock();
@@ -236,22 +241,22 @@ export default function GemCrabTimerPage() {
     setRunning(false);
     warnedThresholdsRef.current.clear();
     endTimeRef.current = null;
-    setPercentInput("100");
+    setPercentInput(String(START_PERCENT));
     setSecondsLeft(FULL_SECONDS);
     releaseWakeLock();
   };
 
   // Jumps the countdown straight to match the crab's HP% (handy when
   // joining late and reading it off-screen) without changing what Reset
-  // and the auto-loop fall back to — a new crab always spawns at 100%.
+  // and the auto-loop fall back to — a new crab always starts at 99%.
   const applyPercent = () => {
     const parsed = parseFloat(percentInput.replace(",", "."));
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      setPercentInput("100");
+      setPercentInput(String(START_PERCENT));
       return;
     }
-    const clampedPercent = Math.min(100, Math.max(1, parsed));
-    const newSeconds = Math.round((FULL_SECONDS * clampedPercent) / 100);
+    const clampedPercent = Math.min(START_PERCENT, Math.max(1, parsed));
+    const newSeconds = Math.round((FULL_SECONDS * clampedPercent) / START_PERCENT);
     setPercentInput(String(clampedPercent));
     warnedThresholdsRef.current.clear();
     setSecondsLeft(newSeconds);
@@ -261,7 +266,7 @@ export default function GemCrabTimerPage() {
   };
 
   const critical = secondsLeft <= Math.min(...WARN_THRESHOLDS);
-  const percentLeft = Math.max(0, Math.min(100, Math.round((secondsLeft / FULL_SECONDS) * 100)));
+  const percentLeft = Math.max(0, Math.min(START_PERCENT, Math.round((secondsLeft / FULL_SECONDS) * START_PERCENT)));
 
   return (
     <div style={frame}>
@@ -332,7 +337,7 @@ export default function GemCrabTimerPage() {
               inputMode="decimal"
               step={1}
               min={1}
-              max={100}
+              max={START_PERCENT}
               value={percentInput}
               onChange={(e) => setPercentInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && applyPercent()}
@@ -424,10 +429,12 @@ export default function GemCrabTimerPage() {
           to 10:00.
         </div>
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
-          The gem crab's HP bar drains from 100% to 0% over the full 10 minutes — each 1% is 6 seconds
-          (0.1 minutes). So if you join when it's already at, say, 92% HP, enter 92 to jump the timer to
-          9:12. Reset and hitting 0:00 both bring it back to a fresh 10:00, paused — press Start again
-          once you're at the next crab, since a new crab always spawns at full HP.
+          The crab's HP drops to 99% almost instantly (the first hit), then drains to 0% over the full
+          10 minutes from there — that's why Start/Reset default to 99%, not 100%. Each 1% is roughly 6
+          seconds. So if you join when it's already lower, say 80% HP, enter 80 to jump the timer to
+          match. Reset and hitting 0:00 both bring it back to a fresh 10:00 at 99%, paused — press Start
+          again once you're at the next crab. This is still being calibrated against real drop timing,
+          so treat it as an estimate for now.
         </div>
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>
           Heads up: these are one-off alerts rather than a live-updating display, because that turned out
